@@ -41,27 +41,27 @@ st.header("👥 Dotación actual")
 operadores_actuales = st.number_input("Operadores actuales", min_value=0, value=6)
 
 # -----------------------
-# CÁLCULO
+# BOTÓN CALCULAR
 # -----------------------
 
 if st.button("Calcular"):
+    st.session_state["calculado"] = True
+
+# -----------------------
+# RESULTADOS (PERSISTENTES)
+# -----------------------
+
+if st.session_state.get("calculado"):
 
     horas_totales = (demanda_dia + demanda_noche) * horas_turno * dias_semana
-    
     operadores_base = horas_totales / horas_promedio_operador
-    
     operadores_ajustados = operadores_base * factor_cobertura
-    
+
     if ausentismo > 0:
         operadores_ajustados = operadores_ajustados / (1 - ausentismo)
-    
-    operadores_final = math.ceil(operadores_ajustados)
-    
-    diferencia = operadores_final - operadores_actuales
 
-    # -----------------------
-    # RESULTADOS
-    # -----------------------
+    operadores_final = math.ceil(operadores_ajustados)
+    diferencia = operadores_final - operadores_actuales
 
     st.header("📈 Resultados")
 
@@ -88,105 +88,110 @@ if st.button("Calcular"):
     """)
 
     # ============================================================
-    # 🔥 NUEVO: PROGRAMADOR DE TURNOS
+    # 🔥 PROGRAMADOR
     # ============================================================
 
     st.header("📅 Programación de Turnos (6 semanas)")
 
+    # -------------------------------
+    # FUNCIONES
+    # -------------------------------
+
+    def crear_operadores(num_base, num_ad):
+        return [f"Operador {i}" for i in range(1, num_base+1)] + \
+               [f"Operador AD {i}" for i in range(1, num_ad+1)]
+
+    def crear_dias():
+        return [f"Día {i}" for i in range(1, 43)]
+
+    def crear_matriz(operadores, dias):
+        df = pd.DataFrame(index=operadores, columns=dias)
+        df[:] = "R"
+        return df
+
+    def inicializar_estado(operadores):
+        return {op: {"turnos": 0, "ultimo_turno": None} for op in operadores}
+
+    def ordenar_operadores(operadores, estado):
+        ops = operadores.copy()
+        random.shuffle(ops)
+        return sorted(ops, key=lambda op: estado[op]["turnos"])
+
+    def puede_iniciar_bloque(matriz, op, dias, idx, duracion):
+        for i in range(duracion):
+            if idx + i >= len(dias):
+                break
+            if matriz.loc[op, dias[idx+i]] != "R":
+                return False
+        return True
+
+    def asignar_bloque(matriz, estado, op, dias, idx, turno):
+        duracion = random.choice([2, 3])
+        for i in range(duracion):
+            if idx + i >= len(dias):
+                break
+            dia = dias[idx+i]
+            matriz.loc[op, dia] = turno
+            estado[op]["turnos"] += 1
+            estado[op]["ultimo_turno"] = turno
+
+    def generar_programacion(num_base, num_ad, demanda_dia, demanda_noche):
+
+        operadores = crear_operadores(num_base, num_ad)
+        dias = crear_dias()
+        matriz = crear_matriz(operadores, dias)
+        estado = inicializar_estado(operadores)
+
+        warnings = []
+
+        for idx, dia in enumerate(dias):
+
+            ops = ordenar_operadores(operadores, estado)
+
+            asignados_dia = 0
+            asignados_noche = 0
+
+            for op in ops:
+                if asignados_dia >= demanda_dia:
+                    break
+
+                if estado[op]["ultimo_turno"] == "N":
+                    continue
+
+                duracion = random.choice([2,3])
+
+                if not puede_iniciar_bloque(matriz, op, dias, idx, duracion):
+                    continue
+
+                asignar_bloque(matriz, estado, op, dias, idx, "D")
+                asignados_dia += 1
+
+            for op in ops:
+                if asignados_noche >= demanda_noche:
+                    break
+
+                if matriz.loc[op, dia] != "R":
+                    continue
+
+                duracion = random.choice([2,3])
+
+                if not puede_iniciar_bloque(matriz, op, dias, idx, duracion):
+                    continue
+
+                asignar_bloque(matriz, estado, op, dias, idx, "N")
+                asignados_noche += 1
+
+            if asignados_dia < demanda_dia or asignados_noche < demanda_noche:
+                warnings.append(dia)
+
+        return matriz, warnings
+
+    # -------------------------------
+    # BOTÓN GENERAR
+    # -------------------------------
+
     if st.button("🚀 Generar programación"):
 
-        def crear_operadores(num_base, num_ad):
-            return [f"Operador {i}" for i in range(1, num_base+1)] + \
-                   [f"Operador AD {i}" for i in range(1, num_ad+1)]
-
-        def crear_dias():
-            return [f"Día {i}" for i in range(1, 43)]
-
-        def crear_matriz(operadores, dias):
-            df = pd.DataFrame(index=operadores, columns=dias)
-            df[:] = "R"
-            return df
-
-        def inicializar_estado(operadores):
-            return {op: {"turnos": 0, "ultimo_turno": None} for op in operadores}
-
-        def ordenar_operadores(operadores, estado):
-            ops = operadores.copy()
-            random.shuffle(ops)
-            return sorted(ops, key=lambda op: estado[op]["turnos"])
-
-        def puede_iniciar_bloque(matriz, op, dias, idx, duracion):
-            for i in range(duracion):
-                if idx + i >= len(dias):
-                    break
-                if matriz.loc[op, dias[idx+i]] != "R":
-                    return False
-            return True
-
-        def asignar_bloque(matriz, estado, op, dias, idx, turno):
-            duracion = random.choice([2, 3])
-            for i in range(duracion):
-                if idx + i >= len(dias):
-                    break
-                dia = dias[idx+i]
-                matriz.loc[op, dia] = turno
-                estado[op]["turnos"] += 1
-                estado[op]["ultimo_turno"] = turno
-
-        def generar_programacion(num_base, num_ad, demanda_dia, demanda_noche):
-
-            operadores = crear_operadores(num_base, num_ad)
-            dias = crear_dias()
-            matriz = crear_matriz(operadores, dias)
-            estado = inicializar_estado(operadores)
-
-            warnings = []
-
-            for idx, dia in enumerate(dias):
-
-                ops = ordenar_operadores(operadores, estado)
-
-                asignados_dia = 0
-                asignados_noche = 0
-
-                # Día
-                for op in ops:
-                    if asignados_dia >= demanda_dia:
-                        break
-
-                    if estado[op]["ultimo_turno"] == "N":
-                        continue
-
-                    duracion = random.choice([2,3])
-
-                    if not puede_iniciar_bloque(matriz, op, dias, idx, duracion):
-                        continue
-
-                    asignar_bloque(matriz, estado, op, dias, idx, "D")
-                    asignados_dia += 1
-
-                # Noche
-                for op in ops:
-                    if asignados_noche >= demanda_noche:
-                        break
-
-                    if matriz.loc[op, dia] != "R":
-                        continue
-
-                    duracion = random.choice([2,3])
-
-                    if not puede_iniciar_bloque(matriz, op, dias, idx, duracion):
-                        continue
-
-                    asignar_bloque(matriz, estado, op, dias, idx, "N")
-                    asignados_noche += 1
-
-                if asignados_dia < demanda_dia or asignados_noche < demanda_noche:
-                    warnings.append(dia)
-
-            return matriz, warnings
-
-        # 🔥 USAR RESULTADOS DEL CÁLCULO
         personal_adicional = max(0, operadores_final - operadores_actuales)
 
         matriz, warnings = generar_programacion(
@@ -203,7 +208,6 @@ if st.button("Calcular"):
 
         st.dataframe(matriz)
 
-        # Exportar Excel
         file = "programacion_turnos.xlsx"
         matriz.to_excel(file)
 
