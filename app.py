@@ -4,16 +4,14 @@ import pandas as pd
 import random
 
 st.set_page_config(page_title="Calculadora de Personal", layout="wide")
-
 st.title("Calculadora de Personal Operativo")
-st.markdown("Ajusta los parametros para calcular la cantidad de operadores necesarios")
 
 # -----------------------
 # INPUTS
 # -----------------------
 st.header("Demanda")
-demanda_dia = st.number_input("Operadores requeridos turno dia", min_value=0, value=3)
-demanda_noche = st.number_input("Operadores requeridos turno noche", min_value=0, value=3)
+demanda_dia = st.number_input("Operadores requeridos turno dia", min_value=1, value=5)
+demanda_noche = st.number_input("Operadores requeridos turno noche", min_value=1, value=5)
 
 st.header("Parametros Operativos")
 dias_semana = st.number_input("Dias a cubrir por semana", min_value=1, max_value=7, value=7)
@@ -29,9 +27,6 @@ ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
 st.header("Dotacion actual")
 operadores_actuales = st.number_input("Operadores actuales", min_value=0, value=6)
 
-# -----------------------
-# BOTON CALCULAR
-# -----------------------
 if st.button("Calcular"):
     st.session_state["calculado"] = True
 
@@ -47,9 +42,8 @@ if st.session_state.get("calculado"):
 
     st.header("Resultados")
     st.write(f"**Horas totales requeridas:** {horas_totales}")
-    st.write(f"**Operadores teoricos (sin ajustes):** {round(operadores_base,2)}")
+    st.write(f"**Operadores teoricos (sin ajustes):** {round(operadores_base, 2)}")
     st.write(f"**Operadores requeridos (ajustados):** {operadores_final}")
-
     if diferencia > 0:
         st.error(f"Faltan {diferencia} operadores")
     elif diferencia < 0:
@@ -58,169 +52,204 @@ if st.session_state.get("calculado"):
         st.info("Dotacion exacta")
 
     st.markdown("---")
-    st.subheader("Explicacion")
-    st.write("""
-    - Se calcula la carga total de horas semanales
-    - Se divide entre las horas promedio por operador (ciclo 3 semanas: 4+4+3 dias x 12h = 44h promedio)
-    - Se ajusta por cobertura y ausentismo
-    - Se redondea hacia arriba
-    """)
 
     # ============================================================
-    # PROGRAMADOR
+    # PROGRAMADOR INTELIGENTE
     # ============================================================
     st.header("Programacion de Turnos (6 semanas)")
 
     SEMANAS = 6
     DIAS_TOTALES = SEMANAS * 7
-    D = "D"
-    N = "N"
-    R = "R"
-
+    DIA = "D"
+    NOCHE = "N"
+    DESCANSO = "R"
+    PATRONES_CICLO = {"A": [4, 4, 3], "B": [4, 3, 4], "C": [3, 4, 4]}
     nombres_semana = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     NOMBRES_DIAS = [f"S{s+1}-{nombres_semana[d]}" for s in range(SEMANAS) for d in range(7)]
+    dias_trabajo_op = round(horas_promedio_operador * SEMANAS / horas_turno)  # 22 con 44h y 12h/turno
 
-    PATRONES_CICLO = {
-        "A": [4, 4, 3],
-        "B": [4, 3, 4],
-        "C": [3, 4, 4],
-    }
-
-    def construir_dias_trabajo(num_operadores, seed):
+    # ----------------------------------------------------------
+    # ANALIZADOR DE ESQUEMAS
+    # ----------------------------------------------------------
+    def analizar_esquemas(dd, dn):
         """
-        Construye el patron de dias de trabajo para cada operador.
+        Encuentra combinaciones (demanda_dia, demanda_noche, N_ops) donde
+        N_ops * dias_trabajo_op = D_total * DIAS_TOTALES (distribucion perfecta).
+        Retorna lista de opciones ordenadas de mejor a peor.
+        """
+        opciones = []
+        vistos = set()
 
-        CORRECCION 1: Asigna combinaciones A/B/C aleatoriamente (shuffle),
-        no de forma secuencial, para evitar sesgo.
+        for delta_d in range(0, 4):
+            for delta_n in range(0, 4):
+                d_d = dd + delta_d
+                d_n = dn + delta_n
+                Dt = d_d + d_n
+                # N minimo para distribucion perfecta
+                # N * dias_trabajo_op debe ser divisible por DIAS_TOTALES y N*d_t/DIAS_TOTALES = Dt
+                N = (Dt * DIAS_TOTALES) // dias_trabajo_op
+                if N * dias_trabajo_op == Dt * DIAS_TOTALES:
+                    key = (d_d, d_n, N)
+                    if key not in vistos:
+                        vistos.add(key)
+                        es_original = (delta_d == 0 and delta_n == 0)
+                        opciones.append({
+                            "demanda_dia": d_d,
+                            "demanda_noche": d_n,
+                            "N_ops": N,
+                            "D_total": Dt,
+                            "es_original": es_original,
+                            "delta_d": delta_d,
+                            "delta_n": delta_n,
+                            "ajuste": delta_d + delta_n,
+                            "perfecto": True,
+                        })
 
-        CORRECCION 2: Los sobrantes van a descanso. Para mantener exactamente
-        22 dias, el algoritmo construye bloques de 4 dias consecutivos + 3 descanso
-        con offset rotativo por operador. La construccion garantiza los 22 dias
-        sin necesidad de forzar turnos sobrantes.
+        # Si la demanda original no tiene solucion perfecta, agregar como opcion con advertencia
+        Dt_orig = dd + dn
+        N_orig = math.ceil(Dt_orig * DIAS_TOTALES / dias_trabajo_op)
+        key_orig = (dd, dn, N_orig)
+        if key_orig not in vistos:
+            total_j = N_orig * dias_trabajo_op
+            exceso = total_j - Dt_orig * DIAS_TOTALES
+            vistos.add(key_orig)
+            opciones.append({
+                "demanda_dia": dd,
+                "demanda_noche": dn,
+                "N_ops": N_orig,
+                "D_total": Dt_orig,
+                "es_original": True,
+                "delta_d": 0,
+                "delta_n": 0,
+                "ajuste": 0,
+                "perfecto": False,
+                "exceso_jornadas": exceso,
+            })
 
-        Retorna:
-          trabajo[op] = lista de 42 bools
-          combo_asignado[op] = "A", "B" o "C"
+        # Ordenar: perfectos primero, luego por menor ajuste
+        opciones.sort(key=lambda x: (not x["perfecto"], x["ajuste"], x["N_ops"]))
+        return opciones[:5]
+
+    # ----------------------------------------------------------
+    # CONSTRUCTOR DE DIAS DE TRABAJO (BALANCEADO)
+    # ----------------------------------------------------------
+    def construir_dias_trabajo(N_ops, D_total, combos, seed):
+        """
+        Construye patron de trabajo con exactamente D_total disponibles cada dia.
+        Garantiza 22 dias por operador = 264h = 44h/sem promedio.
         """
         rng = random.Random(seed)
-
-        # Asignar combinaciones aleatoriamente (no secuencial) - CORRECCION 1
-        combos_disponibles = (["A", "B", "C"] * math.ceil(num_operadores / 3))[:num_operadores]
-        rng.shuffle(combos_disponibles)
-
+        operadores = [f"Op {i+1}" for i in range(N_ops)]
         trabajo = {}
-        combo_asignado = {}
 
-        for op_idx in range(num_operadores):
-            op = f"Op {op_idx+1}"
-            combo = combos_disponibles[op_idx]
-            patron = PATRONES_CICLO[combo]
-            combo_asignado[op] = combo
-
+        for op_idx, op in enumerate(operadores):
+            patron = PATRONES_CICLO[combos[op_idx]]
             dias = [False] * DIAS_TOTALES
-
-            # Offset unico por operador para rotar dias de descanso (Regla 8)
-            # Usamos offset diferente por semana tambien para mayor variedad
-            offset_base = (op_idx * 3) % 7
-
+            offset_base = (op_idx * DIAS_TOTALES) // (N_ops * 1)
+            offset_base = offset_base % 7
             for semana in range(SEMANAS):
                 n_dias = patron[semana % 3]
                 inicio = semana * 7
-                offset = (offset_base + semana * 2) % 7
-
-                # Seleccionar exactamente n_dias dentro de la semana sin solapamiento
-                dias_en_semana = [(offset + d) % 7 for d in range(n_dias)]
-                for dia_en_semana in dias_en_semana:
-                    dias[inicio + dia_en_semana] = True
-
+                offset = (offset_base + semana) % 7
+                for d in range(n_dias):
+                    dias[inicio + (offset + d) % 7] = True
             trabajo[op] = dias
 
-        return trabajo, combo_asignado
+        # Ajustar disponibles: mover dias dentro de la semana para lograr exactamente D_total por dia
+        for dia_idx in range(DIAS_TOTALES):
+            semana = dia_idx // 7
+            disp = sum(1 for op in operadores if trabajo[op][dia_idx])
 
-    def generar_programacion(num_operadores, demanda_dia, demanda_noche, seed):
-        """
-        Asigna turno D o N respetando todas las reglas.
+            iteraciones = 0
+            while disp > D_total and iteraciones < 50:
+                ops_hoy = [op for op in operadores if trabajo[op][dia_idx]]
+                rng.shuffle(ops_hoy)
+                movido = False
+                for op in ops_hoy:
+                    for dia_alt in range(semana * 7, (semana + 1) * 7):
+                        if not trabajo[op][dia_alt]:
+                            disp_alt = sum(1 for o in operadores if trabajo[o][dia_alt])
+                            if disp_alt < D_total:
+                                trabajo[op][dia_idx] = False
+                                trabajo[op][dia_alt] = True
+                                movido = True
+                                break
+                    if movido:
+                        break
+                disp = sum(1 for op in operadores if trabajo[op][dia_idx])
+                iteraciones += 1
 
-        CORRECCION 2: Los sobrantes van a DESCANSO, no a N forzado.
-        La construccion del patron garantiza que cada operador tenga
-        exactamente 22 dias de trabajo en sus bloques asignados.
-        Si un dia el operador es sobrante, ese dia se descansa
-        y el patron del bloque ya tiene los dias suficientes en
-        otras jornadas para llegar a 22.
+        return trabajo
 
-        IMPORTANTE: Para que esto funcione el numero de operadores
-        debe ser suficiente para cubrir demanda todos los dias.
-        Si hay dias sin cobertura, se advierte al usuario.
-        """
-        operadores = [f"Op {i+1}" for i in range(num_operadores)]
-        trabajo, combo_asignado = construir_dias_trabajo(num_operadores, seed)
-
+    # ----------------------------------------------------------
+    # GENERADOR DE PROGRAMACION
+    # ----------------------------------------------------------
+    def generar_programacion(demanda_dia_uso, demanda_noche_uso, N_ops, seed):
+        D_total = demanda_dia_uso + demanda_noche_uso
         rng = random.Random(seed + 1)
 
-        horario = {op: ["W" if trabajo[op][i] else R for i in range(DIAS_TOTALES)] for op in operadores}
+        operadores = [f"Op {i+1}" for i in range(N_ops)]
+        combos = (["A", "B", "C"] * math.ceil(N_ops / 3))[:N_ops]
+        rng.shuffle(combos)
+        combo_dict = {f"Op {i+1}": combos[i] for i in range(N_ops)}
+
+        trabajo = construir_dias_trabajo(N_ops, D_total, combos, seed)
+        horario = {op: ["W" if trabajo[op][i] else DESCANSO for i in range(DIAS_TOTALES)]
+                   for op in operadores}
 
         for dia_idx in range(DIAS_TOTALES):
             ops_hoy = [op for op in operadores if horario[op][dia_idx] == "W"]
-
-            # Separar forzados a noche (venian de N ayer) - Regla 5
             ops_libre = []
             ops_forzado_noche = []
             for op in ops_hoy:
-                ayer = horario[op][dia_idx - 1] if dia_idx > 0 else R
-                if ayer == N:
+                ayer = horario[op][dia_idx - 1] if dia_idx > 0 else DESCANSO
+                if ayer == NOCHE:
                     ops_forzado_noche.append(op)
                 else:
                     ops_libre.append(op)
 
             rng.shuffle(ops_libre)
             rng.shuffle(ops_forzado_noche)
-
             cnt_d = 0
             cnt_n = 0
 
-            # 1) Forzados a noche -> N obligatorio (Regla 5)
+            # Forzados a noche (Regla 5)
             for op in ops_forzado_noche:
-                if cnt_n < demanda_noche:
-                    horario[op][dia_idx] = N
-                    cnt_n += 1
-                else:
-                    # Ya cubrimos noche con forzados, los demas forzados
-                    # igual van a N (no pueden ir a D por Regla 5)
-                    horario[op][dia_idx] = N
-                    cnt_n += 1
+                horario[op][dia_idx] = NOCHE
+                cnt_n += 1
 
-            # 2) Libres -> llenar cupo dia (Regla 6)
+            # Llenar dia
             for op in ops_libre:
-                if cnt_d < demanda_dia and horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = D
+                if cnt_d < demanda_dia_uso and horario[op][dia_idx] == "W":
+                    horario[op][dia_idx] = DIA
                     cnt_d += 1
 
-            # 3) Libres restantes -> llenar cupo noche
+            # Llenar noche
             for op in ops_libre:
-                if cnt_n < demanda_noche and horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = N
+                if cnt_n < demanda_noche_uso and horario[op][dia_idx] == "W":
+                    horario[op][dia_idx] = NOCHE
                     cnt_n += 1
 
-            # 4) CORRECCION: Sobrantes van a DESCANSO (no forzar turno extra)
+            # Sobrantes -> descanso (en esquema perfecto nunca deberia haber sobrantes)
             for op in ops_libre:
                 if horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = R  # descanso, no turno forzado
+                    horario[op][dia_idx] = DESCANSO
 
         # Verificar cobertura
         dias_incompletos = []
         for dia_idx in range(DIAS_TOTALES):
-            c_d = sum(1 for op in operadores if horario[op][dia_idx] == D)
-            c_n = sum(1 for op in operadores if horario[op][dia_idx] == N)
-            if c_d < demanda_dia or c_n < demanda_noche:
+            c_d = sum(1 for op in operadores if horario[op][dia_idx] == DIA)
+            c_n = sum(1 for op in operadores if horario[op][dia_idx] == NOCHE)
+            if c_d < demanda_dia_uso or c_n < demanda_noche_uso:
                 dias_incompletos.append({
                     "Dia": NOMBRES_DIAS[dia_idx],
-                    "Dia asignado": c_d, "Dia requerido": demanda_dia,
-                    "Noche asignada": c_n, "Noche requerida": demanda_noche
+                    "Dia asignado": c_d, "Dia requerido": demanda_dia_uso,
+                    "Noche asignada": c_n, "Noche requerida": demanda_noche_uso
                 })
 
         df = pd.DataFrame(horario, index=NOMBRES_DIAS).T
         df.index.name = "Operador"
-        return df, dias_incompletos, combo_asignado
+        return df, dias_incompletos, combo_dict
 
     def calcular_estadisticas(df, operadores_list):
         filas = []
@@ -228,8 +257,8 @@ if st.session_state.get("calculado"):
             fila = {"Operador": op}
             total = 0
             for s in range(SEMANAS):
-                dias = NOMBRES_DIAS[s*7:(s+1)*7]
-                trabajados = sum(1 for d in dias if df.loc[op, d] in [D, N])
+                dias = NOMBRES_DIAS[s * 7:(s + 1) * 7]
+                trabajados = sum(1 for d in dias if df.loc[op, d] in [DIA, NOCHE])
                 h = trabajados * horas_turno
                 fila[f"S{s+1} dias"] = trabajados
                 fila[f"S{s+1} horas"] = h
@@ -239,9 +268,55 @@ if st.session_state.get("calculado"):
             filas.append(fila)
         return pd.DataFrame(filas).set_index("Operador")
 
-    # -------------------------------
-    # BOTONES
-    # -------------------------------
+    # ----------------------------------------------------------
+    # MOSTRAR OPCIONES DE ESQUEMA
+    # ----------------------------------------------------------
+    st.subheader("Selecciona el esquema de programacion")
+
+    opciones = analizar_esquemas(demanda_dia, demanda_noche)
+
+    st.info(
+        f"El modelo analizo las combinaciones posibles para tu demanda de "
+        f"**{demanda_dia}D + {demanda_noche}N**. "
+        f"Un esquema es **perfecto** cuando garantiza cobertura exacta todos los dias "
+        f"Y exactamente 44h promedio para todos los operadores simultaneamente."
+    )
+
+    # Mostrar tabla de opciones
+    tabla_opciones = []
+    for i, op in enumerate(opciones):
+        ajuste_txt = "Sin ajuste" if op["ajuste"] == 0 else f"+{op['delta_d']}D / +{op['delta_n']}N"
+        perfecto_txt = "✅ Perfecto" if op["perfecto"] else "⚠️ Aproximado"
+        tabla_opciones.append({
+            "Opcion": f"Opcion {i+1}",
+            "Turno Dia": op["demanda_dia"],
+            "Turno Noche": op["demanda_noche"],
+            "Ops necesarios": op["N_ops"],
+            "Ajuste demanda": ajuste_txt,
+            "Calidad": perfecto_txt,
+        })
+    st.dataframe(pd.DataFrame(tabla_opciones).set_index("Opcion"), use_container_width=True)
+
+    opcion_labels = [
+        f"Opcion {i+1}: {op['demanda_dia']}D + {op['demanda_noche']}N | "
+        f"{op['N_ops']} ops | {'Perfecto' if op['perfecto'] else 'Aproximado'}"
+        for i, op in enumerate(opciones)
+    ]
+    seleccion_idx = st.radio("Elige el esquema a programar:", range(len(opciones)),
+                              format_func=lambda i: opcion_labels[i])
+    esquema_sel = opciones[seleccion_idx]
+
+    st.markdown(f"""
+    **Esquema seleccionado:**
+    - Turno dia: **{esquema_sel['demanda_dia']} operadores**
+    - Turno noche: **{esquema_sel['demanda_noche']} operadores**
+    - Total operadores a programar: **{esquema_sel['N_ops']}**
+    - Calidad: **{'Cobertura exacta + 44h iguales para todos' if esquema_sel['perfecto'] else 'Puede haber variaciones menores en horas'}**
+    """)
+
+    # ----------------------------------------------------------
+    # BOTONES GENERAR / REGENERAR
+    # ----------------------------------------------------------
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Generar programacion"):
@@ -253,47 +328,49 @@ if st.session_state.get("calculado"):
                 st.session_state["seed"] = random.randint(0, 99999)
 
     if st.session_state.get("generar"):
-
         seed = st.session_state.get("seed", 42)
 
-        df, dias_incompletos, combo_asignado = generar_programacion(
-            operadores_final, demanda_dia, demanda_noche, seed
+        df, dias_incompletos, combo_dict = generar_programacion(
+            esquema_sel["demanda_dia"],
+            esquema_sel["demanda_noche"],
+            esquema_sel["N_ops"],
+            seed
         )
         operadores_list = df.index.tolist()
 
-        # --- Cobertura ---
+        # Cobertura
         if not dias_incompletos:
             st.success("Cobertura completa - Todos los dias tienen los operadores requeridos")
         else:
-            st.error(f"{len(dias_incompletos)} dias con cobertura incompleta - Se necesitan mas operadores")
+            st.error(f"{len(dias_incompletos)} dias con cobertura incompleta")
             with st.expander("Ver dias incompletos"):
                 st.dataframe(pd.DataFrame(dias_incompletos).set_index("Dia"))
 
         st.markdown("**Leyenda:** D = Turno Dia (6am-6pm) | N = Turno Noche (6pm-6am) | R = Descanso")
 
-        # --- Horario con colores ---
+        # Horario con colores
         def colorear(val):
-            if val == D:
+            if val == DIA:
                 return "background-color: #FFF3CD; color: #856404; font-weight: bold"
-            elif val == N:
+            elif val == NOCHE:
                 return "background-color: #CCE5FF; color: #004085; font-weight: bold"
             return "background-color: #F8F9FA; color: #ADB5BD"
 
         st.subheader("Horario completo")
-        st.dataframe(df.style.map(colorear), use_container_width=True, height=450)
+        st.dataframe(df.style.map(colorear), use_container_width=True, height=500)
 
-        # --- Cobertura diaria (exacta, sin sobrecupo) ---
+        # Cobertura diaria
         st.subheader("Cobertura diaria")
         cobertura = []
         for dia in NOMBRES_DIAS:
-            c_d = (df[dia] == D).sum()
-            c_n = (df[dia] == N).sum()
-            ok_d = "OK" if c_d >= demanda_dia else "FALTA"
-            ok_n = "OK" if c_n >= demanda_noche else "FALTA"
+            c_d = (df[dia] == DIA).sum()
+            c_n = (df[dia] == NOCHE).sum()
+            ok_d = "OK" if c_d >= esquema_sel["demanda_dia"] else "FALTA"
+            ok_n = "OK" if c_n >= esquema_sel["demanda_noche"] else "FALTA"
             cobertura.append({"Dia": dia, f"Dia({ok_d})": c_d, f"Noche({ok_n})": c_n})
         st.dataframe(pd.DataFrame(cobertura).set_index("Dia").T, use_container_width=True)
 
-        # --- Estadisticas horas ---
+        # Horas por operador
         st.subheader("Horas trabajadas por operador")
         df_stats = calcular_estadisticas(df, operadores_list)
 
@@ -313,12 +390,14 @@ if st.session_state.get("calculado"):
             fuera = df_stats[df_stats["Prom h/sem"] != 44.0]
             st.warning(f"{len(fuera)} operadores con promedio diferente a 44h")
 
-        # --- Combinaciones (aleatorias) ---
+        # Combinaciones
         st.subheader("Combinacion de ciclo por operador")
-        datos_combo = [{"Operador": op, "Combinacion": f"{combo_asignado[op]} ({'-'.join(map(str, PATRONES_CICLO[combo_asignado[op]]))})"} for op in operadores_list]
+        combos_nombre = {"A": "A (4-4-3)", "B": "B (4-3-4)", "C": "C (3-4-4)"}
+        datos_combo = [{"Operador": op, "Combinacion": combos_nombre[combo_dict[op]]}
+                       for op in operadores_list]
         st.dataframe(pd.DataFrame(datos_combo).set_index("Operador"), use_container_width=True)
 
-        # --- Excel ---
+        # Excel
         file = "programacion_turnos.xlsx"
         with pd.ExcelWriter(file, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Programacion")
