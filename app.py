@@ -285,7 +285,7 @@ if st.session_state.get("calculado"):
 
         st.subheader("📅 Horario completo")
         st.dataframe(
-            df.style.applymap(colorear),
+            df.style.map(colorear),
             use_container_width=True,
             height=450
         )
