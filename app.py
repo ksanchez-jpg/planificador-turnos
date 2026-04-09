@@ -83,18 +83,28 @@ if st.button("Calcular y Generar Programación"):
     horas_totales_req = (demanda_dia + demanda_noche) * horas_turno * 7
     op_necesarios = math.ceil(((horas_totales_req / horas_promedio_objetivo) * factor_cobertura) / (1 - ausentismo))
     
-    # Guardar todo simultáneamente en session_state
+    # Guardar en session_state
     st.session_state["op_final"] = op_necesarios
     st.session_state["df_horario"] = generar_programacion_mixta(op_necesarios, demanda_dia, demanda_noche)
     st.session_state["calculado"] = True
 
-# VERIFICACIÓN DE SEGURIDAD: Solo mostrar si AMBAS llaves existen
+# VERIFICACIÓN DE SEGURIDAD
 if st.session_state.get("calculado") and "op_final" in st.session_state and "df_horario" in st.session_state:
     
     df = st.session_state["df_horario"]
     op_final = st.session_state["op_final"]
     
-    st.metric("Operadores Necesarios", op_final, delta=int(op_final - operadores_actuales), delta_color="inverse")
+    # --- MÉTRICAS EN COLUMNAS ---
+    col_m1, col_m2 = st.columns(2)
+    
+    with col_m1:
+        st.metric("Operadores Necesarios", op_final)
+    
+    with col_m2:
+        diferencia = int(op_final - operadores_actuales)
+        faltantes = max(0, diferencia)
+        # El delta mostrará la diferencia real respecto a la nómina actual
+        st.metric("Operadores Faltantes", faltantes, delta=f"{diferencia}" if diferencia != 0 else None, delta_color="inverse")
 
     # 1. Tabla de Programación con Estilos
     st.subheader("📅 Cuadrante de Turnos")
