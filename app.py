@@ -36,6 +36,8 @@ NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, SEMANAS+1) for d in ["Lun", "Mar",
 def generar_programacion_mixta(n_ops, d_req, n_req):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     trabajo_base = {}
+
+    # Patrón de trabajo base (sin cambios)
     for i in range(n_ops):
         dias = [False] * DIAS_TOTALES
         patron = [4, 4, 3] if i % 3 == 0 else ([4, 3, 4] if i % 3 == 1 else [3, 4, 4])
@@ -47,6 +49,7 @@ def generar_programacion_mixta(n_ops, d_req, n_req):
                 dias[inicio + (offset + s + d) % 7] = True
         trabajo_base[ops[i]] = dias
 
+    # Posición en bloque de trabajo (sin cambios)
     posicion_bloque = {op: [0]*DIAS_TOTALES for op in ops}
     for op in ops:
         contador = 0
@@ -58,21 +61,55 @@ def generar_programacion_mixta(n_ops, d_req, n_req):
                 contador = 0
 
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
+
     for d_idx in range(DIAS_TOTALES):
         quienes_trabajan = [op for op in ops if trabajo_base[op][d_idx]]
-        prohibidos_dia = [op for op in quienes_trabajan if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE]
+
+        # Restricción: no puede hacer Día si hizo Noche el día anterior
+        prohibidos_dia = [
+            op for op in quienes_trabajan
+            if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE
+        ]
         aptos_d = [op for op in quienes_trabajan if op not in prohibidos_dia]
         aptos_d.sort(key=lambda x: posicion_bloque[x][d_idx])
-        
+
+        # Asignar turno día
         asignados_d = []
         for op in aptos_d:
             if len(asignados_d) < d_req:
                 horario[op][d_idx] = TURNO_DIA
                 asignados_d.append(op)
-        
-        for op in quienes_trabajan:
-            if op not in asignados_d:
-                horario[op][d_idx] = TURNO_NOCHE
+
+        # ── CORRECCIÓN PRINCIPAL ──────────────────────────────────────
+        # Candidatos a noche: quienes trabajan ese día y no están en día
+        asignados_n = [op for op in quienes_trabajan if op not in asignados_d]
+
+        # Si no alcanzan, buscar operadores en descanso que puedan cubrir
+        deficit_n = n_req - len(asignados_n)
+        if deficit_n > 0:
+            # Disponibles: en descanso ese día y que no hicieron Noche ayer
+            disponibles_extra = [
+                op for op in ops
+                if horario[op][d_idx] == DESCANSO
+                and not (d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE)
+                and not (d_idx > 0 and horario[op][d_idx-1] == TURNO_DIA
+                          and posicion_bloque[op][d_idx-1] >= 4)
+            ]
+            # Ordenar por menor carga acumulada (más descanso reciente = más apto)
+            disponibles_extra.sort(
+                key=lambda x: sum(
+                    1 for dd in range(max(0, d_idx-6), d_idx)
+                    if horario[x][dd] != DESCANSO
+                )
+            )
+            for op in disponibles_extra[:deficit_n]:
+                asignados_n.append(op)
+
+        # Asignar turno noche a todos los candidatos confirmados
+        for op in asignados_n:
+            horario[op][d_idx] = TURNO_NOCHE
+        # ─────────────────────────────────────────────────────────────
+
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # -----------------------
