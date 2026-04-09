@@ -7,11 +7,11 @@ import io
 # Configuración de la página
 st.set_page_config(page_title="Calculadora de Personal Pro", layout="wide")
 
-st.title("🧮 Calculadora de Personal - Versión Final Corregida")
-st.markdown("Genera la programación mixta (D-D-N-N) sin errores de estado.")
+st.title("🧮 Calculadora de Personal - Versión Final Estable")
+st.markdown("Genera programación mixta, balance de carga y validación de cumplimiento.")
 
 # -----------------------
-# INPUTS
+# INPUTS (Barra Lateral)
 # -----------------------
 with st.sidebar:
     st.header("📊 Parámetros Operativos")
@@ -26,7 +26,7 @@ with st.sidebar:
     operadores_actuales = st.number_input("Operadores actuales", min_value=0, value=6)
 
 # -----------------------
-# LÓGICA DE PROGRAMACIÓN
+# CONSTANTES Y LÓGICA
 # -----------------------
 SEMANAS = 6
 DIAS_TOTALES = SEMANAS * 7
@@ -76,36 +76,37 @@ def generar_programacion_mixta(n_ops, d_req, n_req):
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # -----------------------
-# EJECUCIÓN
+# EJECUCIÓN PRINCIPAL
 # -----------------------
 if st.button("Calcular y Generar Programación"):
-    # Cálculo de dotación
     horas_totales_req = (demanda_dia + demanda_noche) * horas_turno * 7
     op_necesarios = math.ceil(((horas_totales_req / horas_promedio_objetivo) * factor_cobertura) / (1 - ausentismo))
     
-    # Guardar todo simultáneamente en session_state
     st.session_state["op_final"] = op_necesarios
     st.session_state["df_horario"] = generar_programacion_mixta(op_necesarios, demanda_dia, demanda_noche)
     st.session_state["calculado"] = True
 
-# VERIFICACIÓN DE SEGURIDAD: Solo mostrar si AMBAS llaves existen
-if st.session_state.get("calculado") and "op_final" in st.session_state and "df_horario" in st.session_state:
-    
+if st.session_state.get("calculado"):
     df = st.session_state["df_horario"]
     op_final = st.session_state["op_final"]
     
-    st.metric("Operadores Necesarios", op_final, delta=int(op_final - operadores_actuales), delta_color="inverse")
+    # 1. MÉTRICAS PRINCIPALES
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        st.metric("Operadores Necesarios", op_final)
+    with col_m2:
+        diferencia = int(op_final - operadores_actuales)
+        st.metric("Operadores Faltantes", max(0, diferencia), delta=f"{diferencia}", delta_color="inverse")
 
-    # 1. Tabla de Programación con Estilos
+    # 2. CUADRANTE DE TURNOS
     st.subheader("📅 Cuadrante de Turnos")
-    def aplicar_color_turnos(val):
+    def color_turnos(val):
         if val == "D": return "background-color: #FFF3CD; color: #856404; font-weight: bold"
         if val == "N": return "background-color: #CCE5FF; color: #004085; font-weight: bold"
         return "background-color: #F8F9FA; color: #ADB5BD"
+    st.dataframe(df.style.map(color_turnos), use_container_width=True)
 
-    st.dataframe(df.style.map(aplicar_color_turnos), use_container_width=True)
-
-    # 2. Balance de Carga Laboral
+    # 3. BALANCE DE CARGA LABORAL
     st.subheader("📊 Balance de Carga Laboral")
     stats_data = []
     for op in df.index:
@@ -114,33 +115,52 @@ if st.session_state.get("calculado") and "op_final" in st.session_state and "df_
         dias_d = (df.loc[op] == TURNO_DIA).sum()
         h_totales = dias_t * horas_turno
         stats_data.append({
-            "Operador": op,
-            "Total Días": dias_t,
-            "Turnos Día (D)": dias_d,
-            "Turnos Noche (N)": noches,
-            "Total Horas (6 sem)": h_totales,
-            "Promedio h/sem": round(h_totales / SEMANAS, 1)
+            "Operador": op, "Total Días": dias_t, "Día (D)": dias_d, "Noche (N)": noches,
+            "Total Horas (6 sem)": h_totales, "Promedio h/sem": round(h_totales / SEMANAS, 2)
         })
     df_stats = pd.DataFrame(stats_data).set_index("Operador")
     
+    # Solución al error de Matplotlib: Usamos una función manual para el color
     def resaltar_promedio(val):
-        color = "#D4EDDA" if val == float(horas_promedio_objetivo) else "#F8D7DA"
-        return f"background-color: {color}"
-
+        color = "#D4EDDA" if val >= float(horas_promedio_objetivo) else "#F8D7DA"
+        return f"background-color: {color}; font-weight: bold"
+    
     st.dataframe(df_stats.style.map(resaltar_promedio, subset=["Promedio h/sem"]), use_container_width=True)
 
-    # 3. EXPORTACIÓN A EXCEL CON COLORES
+    # 4. TABLA DE CUMPLIMIENTO (SOLICITADA)
+    st.subheader("✅ Cumplimiento de Personal por Turno")
+    cumplimiento = []
+    for dia in NOMBRES_DIAS:
+        asig_d = (df[dia] == TURNO_DIA).sum()
+        asig_n = (df[dia] == TURNO_NOCHE).sum()
+        cumplimiento.append({
+            "Día": dia,
+            "Req. Día": demanda_dia,
+            "Asig. Día": asig_d,
+            "Cumple Día": "✅ OK" if asig_d >= demanda_dia else "❌ FALTA",
+            "Req. Noche": demanda_noche,
+            "Asig. Noche": asig_n,
+            "Cumple Noche": "✅ OK" if asig_n >= demanda_noche else "❌ FALTA"
+        })
+    df_cumple = pd.DataFrame(cumplimiento).set_index("Día")
+    
+    def color_cumplimiento(val):
+        if "OK" in str(val): return "color: green; font-weight: bold"
+        if "FALTA" in str(val): return "color: red; font-weight: bold"
+        return ""
+    st.dataframe(df_cumple.style.map(color_cumplimiento), use_container_width=True)
+
+    # 5. EXPORTACIÓN
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.style.map(aplicar_color_turnos).to_excel(writer, sheet_name="Programacion_Turnos")
-        df_stats.style.map(resaltar_promedio, subset=["Promedio h/sem"]).to_excel(writer, sheet_name="Estadisticas_Horas")
+        df.style.map(color_turnos).to_excel(writer, sheet_name="Cuadrante")
+        df_stats.style.map(resaltar_promedio, subset=["Promedio h/sem"]).to_excel(writer, sheet_name="Balance")
+        df_cumple.to_excel(writer, sheet_name="Cumplimiento")
 
     st.download_button(
-        label="Descargar Excel con Colores",
+        label="Descargar Excel Completo",
         data=output.getvalue(),
-        file_name="programacion_operativa_color.xlsx",
+        file_name="plan_operativo_final.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-else:
-    st.info("Configura los parámetros en la izquierda y presiona 'Calcular y Generar Programación' para ver los resultados.")
