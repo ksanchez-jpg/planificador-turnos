@@ -168,44 +168,39 @@ if st.session_state.get("calculado"):
         for dia_idx in range(DIAS_TOTALES):
             ops_hoy = [op for op in operadores if horario[op][dia_idx] == "W"]
 
-            # Clasificar segun turno anterior (Regla 5)
-            ops_libre = []
-            ops_forzado_noche = []
+            # Clasificar segun turno anterior
+ops_libre = []
+ops_vienen_de_noche = []
 
-            for op in ops_hoy:
-                turno_ayer = horario[op][dia_idx - 1] if dia_idx > 0 else DESCANSO
-                if turno_ayer == TURNO_NOCHE:
-                    ops_forzado_noche.append(op)
-                else:
-                    ops_libre.append(op)
+for op in ops_hoy:
+    turno_ayer = horario[op][dia_idx - 1] if dia_idx > 0 else DESCANSO
+    if turno_ayer == TURNO_NOCHE:
+        ops_vienen_de_noche.append(op)  # NO pueden ir a día directo
+    else:
+        ops_libre.append(op)
 
-            random.shuffle(ops_libre)
-            random.shuffle(ops_forzado_noche)
+random.shuffle(ops_libre)
+random.shuffle(ops_vienen_de_noche)
 
-            asignados_dia = 0
-            asignados_noche = 0
+asignados_dia = 0
+asignados_noche = 0
 
-            # Forzados a noche -> asignar N (Regla 5, nunca perder el dia)
-            for op in ops_forzado_noche:
-                horario[op][dia_idx] = TURNO_NOCHE
-                asignados_noche += 1
+# 1. Primero asignar turno día SOLO a los que pueden (no vienen de noche)
+for op in ops_libre:
+    if asignados_dia < demanda_dia and horario[op][dia_idx] == "W":
+        horario[op][dia_idx] = TURNO_DIA
+        asignados_dia += 1
 
-            # Libres -> llenar cupo dia primero (Regla 6)
-            for op in ops_libre:
-                if asignados_dia < demanda_dia and horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = TURNO_DIA
-                    asignados_dia += 1
+# 2. Luego asignar turno noche (incluye los que vienen de noche)
+for op in ops_libre + ops_vienen_de_noche:
+    if asignados_noche < demanda_noche and horario[op][dia_idx] == "W":
+        horario[op][dia_idx] = TURNO_NOCHE
+        asignados_noche += 1
 
-            # Libres restantes -> llenar cupo noche
-            for op in ops_libre:
-                if asignados_noche < demanda_noche and horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = TURNO_NOCHE
-                    asignados_noche += 1
-
-            # Sobrantes -> N (nunca R, mantener 22 jornadas)
-            for op in ops_libre:
-                if horario[op][dia_idx] == "W":
-                    horario[op][dia_idx] = TURNO_NOCHE
+# 3. Los que sobren (mantener jornada) → noche
+for op in ops_libre + ops_vienen_de_noche:
+    if horario[op][dia_idx] == "W":
+        horario[op][dia_idx] = TURNO_NOCHE
 
         # Verificar cobertura (Regla 1)
         dias_incompletos = []
