@@ -7,7 +7,7 @@ import io
 # Configuración de la página
 st.set_page_config(page_title="Calculadora de Personal Pro", layout="wide")
 
-st.title("🧮 Calculadora de Personal - Versión Final Estable")
+st.title("🧮 PROGRAMACIÓN DE PERSONAL")
 st.markdown("Genera programación mixta, balance de carga y validación de cumplimiento.")
 
 # -----------------------
