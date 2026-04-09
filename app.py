@@ -7,8 +7,8 @@ import io
 # Configuración de la página
 st.set_page_config(page_title="Calculadora de Personal Pro", layout="wide")
 
-st.title("🧮 Calculadora de Personal - Versión Final Completa")
-st.markdown("Genera programación mixta, balance de carga y validación de cumplimiento por turno.")
+st.title("🧮 Calculadora de Personal - Versión Final Estable")
+st.markdown("Genera programación mixta, balance de carga y validación de cumplimiento.")
 
 # -----------------------
 # INPUTS (Barra Lateral)
@@ -79,7 +79,6 @@ def generar_programacion_mixta(n_ops, d_req, n_req):
 # EJECUCIÓN PRINCIPAL
 # -----------------------
 if st.button("Calcular y Generar Programación"):
-    # Cálculo de dotación
     horas_totales_req = (demanda_dia + demanda_noche) * horas_turno * 7
     op_necesarios = math.ceil(((horas_totales_req / horas_promedio_objetivo) * factor_cobertura) / (1 - ausentismo))
     
@@ -87,7 +86,6 @@ if st.button("Calcular y Generar Programación"):
     st.session_state["df_horario"] = generar_programacion_mixta(op_necesarios, demanda_dia, demanda_noche)
     st.session_state["calculado"] = True
 
-# MOSTRAR RESULTADOS
 if st.session_state.get("calculado"):
     df = st.session_state["df_horario"]
     op_final = st.session_state["op_final"]
@@ -101,7 +99,7 @@ if st.session_state.get("calculado"):
         st.metric("Operadores Faltantes", max(0, diferencia), delta=f"{diferencia}", delta_color="inverse")
 
     # 2. CUADRANTE DE TURNOS
-    st.subheader("📅 Cuadrante de Turnos (Vista General)")
+    st.subheader("📅 Cuadrante de Turnos")
     def color_turnos(val):
         if val == "D": return "background-color: #FFF3CD; color: #856404; font-weight: bold"
         if val == "N": return "background-color: #CCE5FF; color: #004085; font-weight: bold"
@@ -109,7 +107,7 @@ if st.session_state.get("calculado"):
     st.dataframe(df.style.map(color_turnos), use_container_width=True)
 
     # 3. BALANCE DE CARGA LABORAL
-    st.subheader("📊 Balance de Carga Laboral por Operador")
+    st.subheader("📊 Balance de Carga Laboral")
     stats_data = []
     for op in df.index:
         dias_t = (df.loc[op] != DESCANSO).sum()
@@ -121,9 +119,15 @@ if st.session_state.get("calculado"):
             "Total Horas (6 sem)": h_totales, "Promedio h/sem": round(h_totales / SEMANAS, 2)
         })
     df_stats = pd.DataFrame(stats_data).set_index("Operador")
-    st.dataframe(df_stats.style.background_gradient(cmap="Greens", subset=["Promedio h/sem"]), use_container_width=True)
+    
+    # Solución al error de Matplotlib: Usamos una función manual para el color
+    def resaltar_promedio(val):
+        color = "#D4EDDA" if val >= float(horas_promedio_objetivo) else "#F8D7DA"
+        return f"background-color: {color}; font-weight: bold"
+    
+    st.dataframe(df_stats.style.map(resaltar_promedio, subset=["Promedio h/sem"]), use_container_width=True)
 
-    # 4. TABLA DE CUMPLIMIENTO POR DÍA Y TURNO
+    # 4. TABLA DE CUMPLIMIENTO (SOLICITADA)
     st.subheader("✅ Cumplimiento de Personal por Turno")
     cumplimiento = []
     for dia in NOMBRES_DIAS:
@@ -146,19 +150,17 @@ if st.session_state.get("calculado"):
         return ""
     st.dataframe(df_cumple.style.map(color_cumplimiento), use_container_width=True)
 
-    # 5. EXPORTACIÓN A EXCEL
+    # 5. EXPORTACIÓN
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.style.map(color_turnos).to_excel(writer, sheet_name="Cuadrante")
-        df_stats.to_excel(writer, sheet_name="Balance_Carga")
-        df_cumple.to_excel(writer, sheet_name="Cumplimiento_Turnos")
+        df_stats.style.map(resaltar_promedio, subset=["Promedio h/sem"]).to_excel(writer, sheet_name="Balance")
+        df_cumple.to_excel(writer, sheet_name="Cumplimiento")
 
     st.download_button(
-        label="Descargar Excel con Resultados y Colores",
+        label="Descargar Excel Completo",
         data=output.getvalue(),
-        file_name="programacion_y_cumplimiento.xlsx",
+        file_name="plan_operativo_final.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-else:
-    st.info("Ajusta los parámetros y presiona el botón para generar los reportes.")
