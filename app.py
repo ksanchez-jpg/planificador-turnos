@@ -35,9 +35,9 @@ NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, SEMANAS+1) for d in ["Lun", "Mar",
 
 def generar_programacion_mixta(n_ops, d_req, n_req):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    trabajo_base = {}
 
-    # Patrón de trabajo base (sin cambios)
+    # ── Patrón base: distribuir días de trabajo con offsets variados ──
+    trabajo_base = {}
     for i in range(n_ops):
         dias = [False] * DIAS_TOTALES
         patron = [4, 4, 3] if i % 3 == 0 else ([4, 3, 4] if i % 3 == 1 else [3, 4, 4])
@@ -49,66 +49,87 @@ def generar_programacion_mixta(n_ops, d_req, n_req):
                 dias[inicio + (offset + s + d) % 7] = True
         trabajo_base[ops[i]] = dias
 
-    # Posición en bloque de trabajo (sin cambios)
-    posicion_bloque = {op: [0]*DIAS_TOTALES for op in ops}
-    for op in ops:
-        contador = 0
-        for d in range(DIAS_TOTALES):
-            if trabajo_base[op][d]:
-                contador += 1
-                posicion_bloque[op][d] = contador
-            else:
-                contador = 0
+    # ── Contadores de equidad (se actualizan en tiempo real) ──────────
+    noches_acum  = {op: 0 for op in ops}
+    dias_acum    = {op: 0 for op in ops}
+    trabajo_acum = {op: 0 for op in ops}
 
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
 
     for d_idx in range(DIAS_TOTALES):
-        quienes_trabajan = [op for op in ops if trabajo_base[op][d_idx]]
 
-        # Restricción: no puede hacer Día si hizo Noche el día anterior
-        prohibidos_dia = [
-            op for op in quienes_trabajan
+        # ── FASE 1: pool de trabajadores disponibles ese día ─────────────
+        # Candidatos primarios: los que tienen trabajo_base = True ese día
+        candidatos = [op for op in ops if trabajo_base[op][d_idx]]
+
+        # Filtrar quien hizo Noche ayer (no puede hacer Día, pero sí Noche)
+        hizo_noche_ayer = {
+            op for op in ops
             if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE
-        ]
-        aptos_d = [op for op in quienes_trabajan if op not in prohibidos_dia]
-        aptos_d.sort(key=lambda x: posicion_bloque[x][d_idx])
+        }
+
+        # Verificar si hay suficientes para cubrir ambos turnos
+        total_req = d_req + n_req
+        if len(candidatos) < total_req:
+            # Activar reservas: operadores en descanso, ordenados por menor carga
+            # en los últimos 7 días y que no hicieron Noche ayer
+            en_descanso = [
+                op for op in ops
+                if not trabajo_base[op][d_idx]
+                and op not in hizo_noche_ayer
+            ]
+            en_descanso.sort(key=lambda x: trabajo_acum[x])
+            faltan = total_req - len(candidatos)
+            candidatos += en_descanso[:faltan]
+
+        # ── FASE 2: distribuir día/noche con criterio de equidad ─────────
+        # Aptos para día: candidatos que NO hicieron Noche ayer
+        aptos_dia   = [op for op in candidatos if op not in hizo_noche_ayer]
+        # Aptos para noche: todos los candidatos (hacer noche tras noche sí está permitido)
+        aptos_noche = list(candidatos)
+
+        # Ordenar aptos_dia: primero quien tiene MÁS noches acumuladas
+        # (le "toca" compensar con un día)
+        aptos_dia.sort(key=lambda x: -noches_acum[x])
+
+        # Ordenar aptos_noche: primero quien tiene MÁS días acumulados
+        # (le "toca" compensar con una noche) — excluyendo a los ya asignados a día
+        aptos_noche.sort(key=lambda x: -dias_acum[x])
+
+        asignados_d = []
+        asignados_n = []
 
         # Asignar turno día
-        asignados_d = []
-        for op in aptos_d:
+        for op in aptos_dia:
             if len(asignados_d) < d_req:
                 horario[op][d_idx] = TURNO_DIA
                 asignados_d.append(op)
+                dias_acum[op]    += 1
+                trabajo_acum[op] += 1
 
-        # ── CORRECCIÓN PRINCIPAL ──────────────────────────────────────
-        # Candidatos a noche: quienes trabajan ese día y no están en día
-        asignados_n = [op for op in quienes_trabajan if op not in asignados_d]
+        # Asignar turno noche (excluir a los ya en día)
+        ya_asignados = set(asignados_d)
+        for op in aptos_noche:
+            if len(asignados_n) < n_req and op not in ya_asignados:
+                horario[op][d_idx] = TURNO_NOCHE
+                asignados_n.append(op)
+                noches_acum[op]  += 1
+                trabajo_acum[op] += 1
 
-        # Si no alcanzan, buscar operadores en descanso que puedan cubrir
+        # ── FASE 3: rescate final si aún falta noche ─────────────────────
         deficit_n = n_req - len(asignados_n)
         if deficit_n > 0:
-            # Disponibles: en descanso ese día y que no hicieron Noche ayer
-            disponibles_extra = [
+            ya_asignados = set(asignados_d) | set(asignados_n)
+            rescate = [
                 op for op in ops
-                if horario[op][d_idx] == DESCANSO
-                and not (d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE)
-                and not (d_idx > 0 and horario[op][d_idx-1] == TURNO_DIA
-                          and posicion_bloque[op][d_idx-1] >= 4)
+                if op not in ya_asignados
+                and op not in hizo_noche_ayer
             ]
-            # Ordenar por menor carga acumulada (más descanso reciente = más apto)
-            disponibles_extra.sort(
-                key=lambda x: sum(
-                    1 for dd in range(max(0, d_idx-6), d_idx)
-                    if horario[x][dd] != DESCANSO
-                )
-            )
-            for op in disponibles_extra[:deficit_n]:
-                asignados_n.append(op)
-
-        # Asignar turno noche a todos los candidatos confirmados
-        for op in asignados_n:
-            horario[op][d_idx] = TURNO_NOCHE
-        # ─────────────────────────────────────────────────────────────
+            rescate.sort(key=lambda x: trabajo_acum[x])
+            for op in rescate[:deficit_n]:
+                horario[op][d_idx] = TURNO_NOCHE
+                noches_acum[op]  += 1
+                trabajo_acum[op] += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
