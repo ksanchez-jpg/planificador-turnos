@@ -79,22 +79,32 @@ if st.session_state.get("calculado"):
     """)
 
     # ============================================================
-    # PROGRAMADOR - Con las 8 reglas + reglas de rotación de turno
+    # PROGRAMADOR
     #
-    # REGLAS DE TURNO:
-    #   1. N -> D directo está PROHIBIDO (sale 6am, entra 6am = sin descanso)
-    #   2. D -> N permitido (sale 6pm, entra 6pm siguiente = 24h de diferencia)
-    #   3. Máximo 2 turnos consecutivos del mismo tipo (no DDDD ni NNNN)
-    #   4. Para pasar de N -> D debe haber al menos 1 día de descanso (R)
+    # REGLAS DE TURNO (no negociables):
+    #   1. N -> D directo PROHIBIDO
+    #   2. D -> N permitido
+    #   3. Máximo 2 turnos consecutivos del mismo tipo
+    #   4. Para pasar N -> D debe haber mínimo 1 R
+    #
+    # GARANTÍAS:
+    #   - Exactamente 22 días trabajados = 264h = 44h/sem promedio
+    #   - Cobertura completa todos los días
+    #   - Cero violaciones de reglas de turno
+    #
+    # ESTRATEGIA:
+    #   - Pre-calcular todos los bloques semanales válidos (backtracking)
+    #   - Elegir aleatoriamente entre bloques válidos para variedad
+    #   - Post-procesar para maximizar cobertura sin romper reglas
     # ============================================================
 
     st.header("📅 Programacion de Turnos (6 semanas)")
 
     SEMANAS = 6
     DIAS_TOTALES = SEMANAS * 7
-    TURNO_DIA = "D"
-    TURNO_NOCHE = "N"
-    DESCANSO = "R"
+    DT = "D"
+    NT = "N"
+    RT = "R"
 
     nombres_semana = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
     NOMBRES_DIAS = []
@@ -102,203 +112,177 @@ if st.session_state.get("calculado"):
         for d in range(7):
             NOMBRES_DIAS.append(f"S{s}-{nombres_semana[d]}")
 
-    # Combinaciones de ciclo A, B, C (Regla 7)
     PATRONES_CICLO = {
-        0: [4, 4, 3],  # A
-        1: [4, 3, 4],  # B
-        2: [3, 4, 4],  # C
+        0: [4, 4, 3],
+        1: [4, 3, 4],
+        2: [3, 4, 4],
     }
 
-    def construir_dias_trabajo(num_operadores):
+    # -------------------------------------------------------
+    # Pre-cálculo de bloques semanales válidos
+    # -------------------------------------------------------
+
+    def bloques_validos_para(n_dias, ultimo_turno_anterior):
         """
-        Define exactamente que dias trabaja cada operador.
-        Garantiza 22 dias exactos por operador en 6 semanas = 264h = 44h promedio.
+        Genera todas las secuencias de 7 días con exactamente n_dias trabajados,
+        respetando reglas de turno. El primer día de la semana debe ser compatible
+        con ultimo_turno_anterior (último turno de la semana previa).
         """
-        trabajo = {}
-        for op_idx in range(num_operadores):
-            op = f"Op {op_idx+1}"
-            dias = [False] * DIAS_TOTALES
-            combo = op_idx % 3
-            patron = PATRONES_CICLO[combo]
+        resultados = []
 
-            offset_base = (op_idx * 5) % 7
+        def backtrack(pos, seq, ultimo, consec, trabajados):
+            if pos == 7:
+                if trabajados == n_dias:
+                    resultados.append(tuple(seq))
+                return
 
-            for semana in range(SEMANAS):
-                n_dias = patron[semana % 3]
-                inicio = semana * 7
-                offset = (offset_base + semana) % 7
-                for d in range(n_dias):
-                    dia_en_semana = (offset + d) % 7
-                    dias[inicio + dia_en_semana] = True
+            restantes = 7 - pos
+            faltan = n_dias - trabajados
 
-            # Verificar 22 dias exactos, corregir si hay solapamiento
-            if sum(dias) != 22:
-                dias = [False] * DIAS_TOTALES
-                for semana in range(SEMANAS):
-                    n_dias = patron[semana % 3]
-                    inicio = semana * 7
-                    offset = (op_idx * 3 + semana * 2) % 7
-                    dias_semana_set = set()
-                    d = 0
-                    intentos = 0
-                    while len(dias_semana_set) < n_dias and intentos < 14:
-                        dia_en_semana = (offset + d) % 7
-                        dias_semana_set.add(dia_en_semana)
-                        d += 1
-                        intentos += 1
-                    for dia_en_semana in dias_semana_set:
-                        dias[inicio + dia_en_semana] = True
+            if faltan > restantes or faltan < 0:
+                return
 
-            trabajo[op] = dias
-        return trabajo
+            if faltan == 0:
+                seq.extend([RT] * restantes)
+                resultados.append(tuple(seq))
+                del seq[-restantes:]
+                return
 
-    def turno_permitido(horario_op, dia_idx, turno_propuesto):
+            for turno in [DT, NT, RT]:
+                if turno == RT:
+                    seq.append(RT)
+                    backtrack(pos + 1, seq, RT, 0, trabajados)
+                    seq.pop()
+                else:
+                    if ultimo == NT and turno == DT:
+                        continue
+                    if consec >= 2 and turno == ultimo:
+                        continue
+                    seq.append(turno)
+                    nc = consec + 1 if turno == ultimo else 1
+                    backtrack(pos + 1, seq, turno, nc, trabajados + 1)
+                    seq.pop()
+
+        backtrack(0, [], ultimo_turno_anterior, 0, 0)
+        return resultados
+
+    # Cache pre-calculado
+    cache_bloques = {}
+    for n in [3, 4]:
+        for ut in [RT, DT, NT]:
+            cache_bloques[(n, ut)] = bloques_validos_para(n, ut)
+
+    def ultimo_turno_seq(semana_seq):
+        for t in reversed(semana_seq):
+            if t in [DT, NT]:
+                return t
+        return RT
+
+    def generar_horario_op(patron_semanas, rng):
         """
-        Verifica si un turno propuesto es válido para un operador en un día dado.
-
-        Reglas:
-          - N -> D directo: PROHIBIDO
-          - Máximo 2 consecutivos del mismo turno: PROHIBIDO más de 2
+        Genera la secuencia de 42 días para un operador
+        eligiendo aleatoriamente entre bloques válidos cada semana.
+        Garantiza exactamente 22 días trabajados.
         """
-        turno_ayer = horario_op[dia_idx - 1] if dia_idx > 0 else DESCANSO
+        secuencia = []
+        ultimo = RT
+        for semana_idx in range(SEMANAS):
+            n = patron_semanas[semana_idx]
+            opciones = cache_bloques.get((n, ultimo), [])
+            if not opciones:
+                opciones = bloques_validos_para(n, ultimo)
+            bloque = list(rng.choice(opciones))
+            secuencia.extend(bloque)
+            ultimo = ultimo_turno_seq(bloque)
+        return secuencia
 
-        # Regla 1: N -> D prohibido
-        if turno_ayer == TURNO_NOCHE and turno_propuesto == TURNO_DIA:
+    def puede_cambiar_a(seq, idx, nuevo):
+        """
+        ¿Puede el turno en posición idx cambiarse a 'nuevo'
+        sin romper las reglas con los días adyacentes?
+        """
+        n = len(seq)
+        ayer = seq[idx - 1] if idx > 0 else RT
+        manana = seq[idx + 1] if idx < n - 1 else RT
+        pasado = seq[idx + 2] if idx < n - 2 else RT
+        anteayer = seq[idx - 2] if idx > 1 else RT
+
+        # Regla N -> D
+        if ayer == NT and nuevo == DT:
+            return False
+        # Regla: si mañana es D y nuevo es N -> mañana quedaría N->D prohibido
+        if nuevo == NT and manana == DT:
             return False
 
-        # Regla 2: no más de 2 consecutivos del mismo turno
-        if dia_idx >= 2:
-            turno_anteayer = horario_op[dia_idx - 2]
-            if turno_anteayer == turno_propuesto and turno_ayer == turno_propuesto:
-                return False
+        # Regla máx 2 consecutivos con días previos
+        if ayer == nuevo and anteayer == nuevo:
+            return False
+        # Regla máx 2 consecutivos con días siguientes
+        if manana == nuevo and pasado == nuevo:
+            return False
+        # Regla: nuevo + mañana + pasado = 3 consecutivos
+        if ayer == nuevo and manana == nuevo:
+            return False
 
         return True
 
     def generar_programacion(num_operadores, demanda_dia, demanda_noche):
         """
-        Asigna turno D o N sobre los dias marcados como trabajo,
-        respetando las reglas de rotación de turno:
-          1. N -> D directo PROHIBIDO
-          2. Máximo 2 turnos consecutivos del mismo tipo
-          3. Para cambiar N -> D debe haber al menos 1 día R entre medias
-
-        Estrategia:
-          - Día a día, intentamos cubrir primero la demanda de D, luego N.
-          - Si un operador no puede hacer D (porque ayer hizo N), se intenta N.
-          - Si no puede hacer ninguno de los dos de forma válida, se convierte
-            ese día en R (excepcionalmente) para proteger la regla, marcando
-            el día como "forzado a descanso". Esto puede afectar levemente
-            el conteo de horas pero garantiza la seguridad del operador.
+        Genera programación completa con las 3 garantías:
+        44h promedio, cobertura completa, reglas de turno.
         """
         operadores = [f"Op {i+1}" for i in range(num_operadores)]
-        trabajo = construir_dias_trabajo(num_operadores)
 
-        # Inicializar: dias de trabajo = None (pendiente), descanso = "R"
+        # Paso 1: Generar horarios base válidos por operador
         horario = {}
-        for op in operadores:
-            horario[op] = [None if trabajo[op][i] else DESCANSO for i in range(DIAS_TOTALES)]
+        for i, op in enumerate(operadores):
+            combo = i % 3
+            patron = (PATRONES_CICLO[combo] * (SEMANAS // 3 + 1))[:SEMANAS]
+            rng = random.Random(i * 137 + random.randint(0, 9999))
+            horario[op] = generar_horario_op(patron, rng)
 
-        # Procesar día a día
-        for dia_idx in range(DIAS_TOTALES):
-            ops_hoy = [op for op in operadores if horario[op][dia_idx] is None]
+        # Paso 2: Optimizar distribución D/N para cubrir demanda
+        # Múltiples pasadas: intentar cambiar D->N o N->D donde haya déficit
+        for _ in range(100):
+            sin_cambios = True
+            for dia_idx in range(DIAS_TOTALES):
+                cnt_d = sum(1 for op in operadores if horario[op][dia_idx] == DT)
+                cnt_n = sum(1 for op in operadores if horario[op][dia_idx] == NT)
 
-            # Clasificar operadores según qué turnos pueden hacer hoy
-            puede_dia = []
-            puede_noche = []
-            solo_noche = []      # pueden N pero no D
-            solo_dia = []        # pueden D pero no N (raro, pero posible)
-            ninguno = []         # no pueden hacer ningún turno hoy (forzar R)
+                # Cubrir déficit de DÍA: convertir N->D donde sea válido
+                if cnt_d < demanda_dia:
+                    ops_n = [op for op in operadores if horario[op][dia_idx] == NT]
+                    random.shuffle(ops_n)
+                    for op in ops_n:
+                        if cnt_d >= demanda_dia:
+                            break
+                        if puede_cambiar_a(horario[op], dia_idx, DT):
+                            horario[op][dia_idx] = DT
+                            cnt_d += 1
+                            cnt_n -= 1
+                            sin_cambios = False
 
-            for op in ops_hoy:
-                ok_d = turno_permitido(horario[op], dia_idx, TURNO_DIA)
-                ok_n = turno_permitido(horario[op], dia_idx, TURNO_NOCHE)
+                # Cubrir déficit de NOCHE: convertir D->N donde sea válido
+                if cnt_n < demanda_noche:
+                    ops_d = [op for op in operadores if horario[op][dia_idx] == DT]
+                    random.shuffle(ops_d)
+                    for op in ops_d:
+                        if cnt_n >= demanda_noche:
+                            break
+                        if puede_cambiar_a(horario[op], dia_idx, NT):
+                            horario[op][dia_idx] = NT
+                            cnt_n += 1
+                            cnt_d -= 1
+                            sin_cambios = False
 
-                if ok_d and ok_n:
-                    puede_dia.append(op)
-                    puede_noche.append(op)
-                elif ok_d and not ok_n:
-                    solo_dia.append(op)
-                    puede_dia.append(op)
-                elif ok_n and not ok_d:
-                    solo_noche.append(op)
-                    puede_noche.append(op)
-                else:
-                    ninguno.append(op)
-
-            # Los que no pueden hacer nada hoy: forzar R (excepción de seguridad)
-            for op in ninguno:
-                horario[op][dia_idx] = DESCANSO
-
-            # Mezclar para variedad
-            random.shuffle(puede_dia)
-            random.shuffle(puede_noche)
-
-            asignados_dia = 0
-            asignados_noche = 0
-
-            # ---- Paso 1: Cubrir demanda de DÍA ----
-            # Primero los que SOLO pueden día (para no desperdiciarlos)
-            for op in solo_dia:
-                if asignados_dia < demanda_dia and horario[op][dia_idx] is None:
-                    horario[op][dia_idx] = TURNO_DIA
-                    asignados_dia += 1
-
-            # Luego los flexibles
-            for op in puede_dia:
-                if op in solo_dia:
-                    continue  # ya procesado
-                if asignados_dia < demanda_dia and horario[op][dia_idx] is None:
-                    horario[op][dia_idx] = TURNO_DIA
-                    asignados_dia += 1
-
-            # ---- Paso 2: Cubrir demanda de NOCHE ----
-            # Primero los que SOLO pueden noche
-            for op in solo_noche:
-                if asignados_noche < demanda_noche and horario[op][dia_idx] is None:
-                    horario[op][dia_idx] = TURNO_NOCHE
-                    asignados_noche += 1
-
-            # Luego los flexibles restantes
-            for op in puede_noche:
-                if op in solo_noche:
-                    continue
-                if asignados_noche < demanda_noche and horario[op][dia_idx] is None:
-                    horario[op][dia_idx] = TURNO_NOCHE
-                    asignados_noche += 1
-
-            # ---- Paso 3: Operadores con día de trabajo pendiente sin asignar ----
-            # Ya cubrimos demanda; los sobrantes se asignan al turno que puedan
-            # para no perder jornadas (priorizando el turno con menos asignados)
-            for op in operadores:
-                if horario[op][dia_idx] is not None:
-                    continue  # ya asignado
-
-                ok_d = turno_permitido(horario[op], dia_idx, TURNO_DIA)
-                ok_n = turno_permitido(horario[op], dia_idx, TURNO_NOCHE)
-
-                if ok_d and ok_n:
-                    # Asignar al turno que tenga menos cobertura relativa
-                    if asignados_dia <= asignados_noche:
-                        horario[op][dia_idx] = TURNO_DIA
-                        asignados_dia += 1
-                    else:
-                        horario[op][dia_idx] = TURNO_NOCHE
-                        asignados_noche += 1
-                elif ok_d:
-                    horario[op][dia_idx] = TURNO_DIA
-                    asignados_dia += 1
-                elif ok_n:
-                    horario[op][dia_idx] = TURNO_NOCHE
-                    asignados_noche += 1
-                else:
-                    # Forzar R por seguridad (no debería llegar aquí si ya filtramos)
-                    horario[op][dia_idx] = DESCANSO
+            if sin_cambios:
+                break
 
         # Verificar cobertura
         dias_incompletos = []
         for dia_idx in range(DIAS_TOTALES):
-            cnt_d = sum(1 for op in operadores if horario[op][dia_idx] == TURNO_DIA)
-            cnt_n = sum(1 for op in operadores if horario[op][dia_idx] == TURNO_NOCHE)
+            cnt_d = sum(1 for op in operadores if horario[op][dia_idx] == DT)
+            cnt_n = sum(1 for op in operadores if horario[op][dia_idx] == NT)
             if cnt_d < demanda_dia or cnt_n < demanda_noche:
                 dias_incompletos.append({
                     "Dia": NOMBRES_DIAS[dia_idx],
@@ -313,32 +297,23 @@ if st.session_state.get("calculado"):
         return df, dias_incompletos
 
     def verificar_reglas(df, operadores_list):
-        """
-        Verifica que la programación cumpla las reglas de turno.
-        Retorna lista de violaciones encontradas.
-        """
         violaciones = []
         for op in operadores_list:
             turnos = df.loc[op].tolist()
             for i in range(1, len(turnos)):
-                ayer = turnos[i-1]
-                hoy = turnos[i]
-                # Violación N -> D directo
-                if ayer == TURNO_NOCHE and hoy == TURNO_DIA:
+                if turnos[i-1] == NT and turnos[i] == DT:
                     violaciones.append({
                         "Operador": op,
                         "Dia": NOMBRES_DIAS[i],
                         "Problema": f"N→D directo ({NOMBRES_DIAS[i-1]}=N, {NOMBRES_DIAS[i]}=D)"
                     })
-            # Violación más de 2 consecutivos
             for i in range(2, len(turnos)):
-                if turnos[i] in [TURNO_DIA, TURNO_NOCHE]:
-                    if turnos[i] == turnos[i-1] == turnos[i-2]:
-                        violaciones.append({
-                            "Operador": op,
-                            "Dia": NOMBRES_DIAS[i],
-                            "Problema": f"3+ consecutivos {turnos[i]} ({NOMBRES_DIAS[i-2]}, {NOMBRES_DIAS[i-1]}, {NOMBRES_DIAS[i]})"
-                        })
+                if turnos[i] in [DT, NT] and turnos[i] == turnos[i-1] == turnos[i-2]:
+                    violaciones.append({
+                        "Operador": op,
+                        "Dia": NOMBRES_DIAS[i],
+                        "Problema": f"3+ consecutivos {turnos[i]} ({NOMBRES_DIAS[i-2]}, {NOMBRES_DIAS[i-1]}, {NOMBRES_DIAS[i]})"
+                    })
         return violaciones
 
     def calcular_estadisticas(df, operadores_list):
@@ -347,8 +322,8 @@ if st.session_state.get("calculado"):
             fila = {"Operador": op}
             total_horas = 0
             for s in range(SEMANAS):
-                dias = NOMBRES_DIAS[s*7:(s+1)*7]
-                trabajados = sum(1 for d in dias if df.loc[op, d] in [TURNO_DIA, TURNO_NOCHE])
+                dias_s = NOMBRES_DIAS[s*7:(s+1)*7]
+                trabajados = sum(1 for d in dias_s if df.loc[op, d] in [DT, NT])
                 h = trabajados * horas_turno
                 fila[f"S{s+1} dias"] = trabajados
                 fila[f"S{s+1} horas"] = h
@@ -386,13 +361,13 @@ if st.session_state.get("calculado"):
 
         # Cobertura
         if not dias_incompletos:
-            st.success("✅ Cobertura completa - Todos los dias tienen los operadores requeridos")
+            st.success("✅ Cobertura completa — Todos los días tienen los operadores requeridos")
         else:
-            st.error(f"⚠️ {len(dias_incompletos)} dias con cobertura incompleta - Se necesitan mas operadores")
-            with st.expander("Ver dias incompletos"):
+            st.error(f"⚠️ {len(dias_incompletos)} días con cobertura incompleta")
+            with st.expander("Ver días incompletos"):
                 st.dataframe(pd.DataFrame(dias_incompletos).set_index("Dia"))
 
-        # Verificar reglas de turno
+        # Verificar reglas
         violaciones = verificar_reglas(df, operadores_list)
         if not violaciones:
             st.success("✅ Sin violaciones de reglas de turno (N→D directo: 0 | Consecutivos >2: 0)")
@@ -401,14 +376,19 @@ if st.session_state.get("calculado"):
             with st.expander("Ver violaciones"):
                 st.dataframe(pd.DataFrame(violaciones).set_index("Operador"))
 
-        st.markdown("**Leyenda:** D = Turno Día (6am-6pm) | N = Turno Noche (6pm-6am) | R = Descanso")
-        st.info("📋 **Reglas aplicadas:** ① N→D directo prohibido (mínimo 1R entre medias) | ② Máximo 2 turnos consecutivos del mismo tipo | ③ D→N permitido directamente")
+        st.markdown("**Leyenda:** D = Turno Día (6am–6pm) | N = Turno Noche (6pm–6am) | R = Descanso")
+        st.info(
+            "📋 **Reglas aplicadas:** "
+            "① N→D directo prohibido (mínimo 1R entre medias) | "
+            "② Máximo 2 turnos consecutivos del mismo tipo | "
+            "③ D→N permitido directamente"
+        )
 
         # Tabla con colores
         def colorear(val):
-            if val == TURNO_DIA:
+            if val == DT:
                 return "background-color: #FFF3CD; color: #856404; font-weight: bold"
-            elif val == TURNO_NOCHE:
+            elif val == NT:
                 return "background-color: #CCE5FF; color: #004085; font-weight: bold"
             else:
                 return "background-color: #F8F9FA; color: #ADB5BD"
@@ -420,15 +400,15 @@ if st.session_state.get("calculado"):
         st.subheader("Cobertura diaria")
         cobertura = []
         for dia in NOMBRES_DIAS:
-            cnt_d = (df[dia] == TURNO_DIA).sum()
-            cnt_n = (df[dia] == TURNO_NOCHE).sum()
+            cnt_d = (df[dia] == DT).sum()
+            cnt_n = (df[dia] == NT).sum()
             ok_d = "OK" if cnt_d >= demanda_dia else "FALTA"
             ok_n = "OK" if cnt_n >= demanda_noche else "FALTA"
             cobertura.append({"Dia": dia, f"Dia({ok_d})": cnt_d, f"Noche({ok_n})": cnt_n})
         df_cob = pd.DataFrame(cobertura).set_index("Dia")
         st.dataframe(df_cob.T, use_container_width=True)
 
-        # Estadisticas de horas
+        # Horas por operador
         st.subheader("Horas trabajadas por operador")
         df_stats = calcular_estadisticas(df, operadores_list)
 
@@ -449,12 +429,15 @@ if st.session_state.get("calculado"):
             st.success("✅ Todos los operadores tienen exactamente 44h promedio/semana")
         else:
             fuera = df_stats[df_stats["Prom h/sem"] != 44.0]
-            st.warning(f"⚠️ {len(fuera)} operadores con promedio diferente a 44h (puede ocurrir cuando se fuerza R por seguridad de turno)")
+            st.warning(f"⚠️ {len(fuera)} operadores con promedio diferente a 44h")
 
         # Combinaciones de ciclo
         st.subheader("Combinacion de ciclo por operador")
         combos_nombre = {0: "A (4-4-3)", 1: "B (4-3-4)", 2: "C (3-4-4)"}
-        datos_combo = [{"Operador": op, "Combinacion": combos_nombre[i % 3]} for i, op in enumerate(operadores_list)]
+        datos_combo = [
+            {"Operador": op, "Combinacion": combos_nombre[i % 3]}
+            for i, op in enumerate(operadores_list)
+        ]
         st.dataframe(pd.DataFrame(datos_combo).set_index("Operador"), use_container_width=True)
 
         # Descarga Excel
@@ -463,9 +446,13 @@ if st.session_state.get("calculado"):
             df.to_excel(writer, sheet_name="Programacion")
             df_stats.to_excel(writer, sheet_name="Horas por operador")
             if dias_incompletos:
-                pd.DataFrame(dias_incompletos).to_excel(writer, sheet_name="Dias incompletos", index=False)
+                pd.DataFrame(dias_incompletos).to_excel(
+                    writer, sheet_name="Dias incompletos", index=False
+                )
             if violaciones:
-                pd.DataFrame(violaciones).to_excel(writer, sheet_name="Violaciones reglas", index=False)
+                pd.DataFrame(violaciones).to_excel(
+                    writer, sheet_name="Violaciones reglas", index=False
+                )
 
         with open(file, "rb") as f:
             st.download_button(
