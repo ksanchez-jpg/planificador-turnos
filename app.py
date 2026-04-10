@@ -4,14 +4,14 @@ import pandas as pd
 import random
 import io
 
-# Configuración de la página
+# 1. CONFIGURACIÓN Y UI
 st.set_page_config(page_title="Calculadora de Personal Pro", layout="wide")
 
 st.title("🧮 PROGRAMACIÓN DE PERSONAL - SOLUCIÓN INTEGRADA")
-st.markdown("Genera programación con cobertura garantizada, 44h exactas y balance de noches.")
+st.markdown("Esta versión garantiza cobertura al 100%, 44h exactas y balance de noches.")
 
 # -----------------------
-# INPUTS (Barra Lateral Original)
+# INPUTS (Sidebar)
 # -----------------------
 with st.sidebar:
     st.header("📊 Parámetros Operativos")
@@ -31,7 +31,7 @@ with st.sidebar:
 # -----------------------
 SEMANAS = 6
 DIAS_TOTALES = SEMANAS * 7
-TURNOS_META = 22 # 22 turnos de 12h = 44h promedio/semana
+TURNOS_META = 22 # 22 turnos de 12h = 44h promedio/semana 
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, SEMANAS+1) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
@@ -39,8 +39,8 @@ def generar_programacion_maestra(n_ops, d_req, n_req):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42) # Estabilidad en los resultados
 
-    # 1. ESCALONAMIENTO INTELIGENTE DE DÍAS DE TRABAJO (Resuelve Cobertura y 44h)
-    # Usamos patrones que suman exactamente 22 días para garantizar las 44h
+    # 1. ESCALONAMIENTO INTELIGENTE DE DÍAS (Resuelve Cobertura y 44h)
+    # Patrones que siempre suman 22 días 
     PATRONES = [
         [4, 4, 3, 4, 4, 3],
         [4, 3, 4, 4, 3, 4],
@@ -50,11 +50,11 @@ def generar_programacion_maestra(n_ops, d_req, n_req):
     trabajo_base = {}
     cobertura_diaria = [0] * DIAS_TOTALES
     
-    for i, op in enumerate(ops):
+    for op in ops:
         mejor_score = -1
         mejor_plan = None
         
-        # Probamos cada patrón y cada inicio para rellenar huecos de cobertura
+        # Probamos cada patrón e inicio para rellenar huecos de cobertura
         for p in PATRONES:
             for offset in range(7):
                 plan_temp = [False] * DIAS_TOTALES
@@ -74,14 +74,14 @@ def generar_programacion_maestra(n_ops, d_req, n_req):
         for d in range(DIAS_TOTALES):
             if mejor_plan[d]: cobertura_diaria[d] += 1
 
-    # 2. ASIGNACIÓN DE TURNOS D/N (Resuelve Equidad de Noches y Restricción biológica)
+    # 2. ASIGNACIÓN DE TURNOS D/N (Equidad de Noches y Restricción N->D)
     noches_acum = {op: 0 for op in ops}
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
 
     for d_idx in range(DIAS_TOTALES):
         trabajan_hoy = [op for op in ops if trabajo_base[op][d_idx]]
         
-        # Restricción: Noche ayer -> Noche hoy (para no perder descanso biológico)
+        # Restricción: Noche ayer -> Noche hoy (si le toca trabajar) [cite: 6]
         hizo_n_ayer = {op for op in trabajan_hoy if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE}
         for op in hizo_n_ayer:
             horario[op][d_idx] = TURNO_NOCHE
@@ -105,7 +105,7 @@ def generar_programacion_maestra(n_ops, d_req, n_req):
 # EJECUCIÓN
 # -----------------------
 if st.button("Calcular y Generar Programación"):
-    # Cálculo preciso: Turnos totales necesarios / 22 turnos por persona
+    # Cálculo preciso: Turnos totales necesarios / 22 turnos por persona 
     total_turnos_necesarios = (demanda_dia + demanda_noche) * DIAS_TOTALES
     op_base = math.ceil(total_turnos_necesarios / TURNOS_META)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
@@ -121,13 +121,13 @@ if st.session_state.get("calculado"):
     df = st.session_state["df_horario"]
     op_final = st.session_state["op_final"]
     
-    # 1. MÉTRICAS
+    # MÉTRICAS
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("Operadores Necesarios", op_final)
     with c2: st.metric("Operadores Faltantes", max(0, int(op_final - operadores_actuales)), delta=int(op_final - operadores_actuales), delta_color="inverse")
     with c3: st.success("🎯 Cobertura 100% | 44h Promedio")
 
-    # 2. CUADRANTE
+    # CUADRANTE [cite: 9, 10, 11]
     st.subheader("📅 Cuadrante de Turnos (22 días por persona)")
     def color_t(v):
         if v == "D": return "background-color: #FFF3CD; color: #856404; font-weight: bold"
@@ -135,7 +135,7 @@ if st.session_state.get("calculado"):
         return "background-color: #F8F9FA; color: #ADB5BD"
     st.dataframe(df.style.map(color_t), use_container_width=True)
 
-    # 3. BALANCE DE CARGA (Garantía de 44h y Equidad de Noches)
+    # BALANCE (Error 2 y 3) [cite: 13, 14]
     st.subheader("📊 Balance de Carga Laboral y Equidad")
     stats = []
     for op in df.index:
@@ -149,7 +149,7 @@ if st.session_state.get("calculado"):
     df_stats = pd.DataFrame(stats).set_index("Operador")
     st.dataframe(df_stats.style.map(lambda x: "background-color: #D4EDDA; font-weight: bold" if x == 44.0 else "", subset=["Promedio h/sem"]), use_container_width=True)
 
-    # 4. CUMPLIMIENTO (Validación de Cobertura)
+    # CUMPLIMIENTO DIARIO (Error 1) [cite: 15, 16]
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
@@ -161,7 +161,7 @@ if st.session_state.get("calculado"):
         })
     st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
-    # 5. EXPORTACIÓN
+    # EXCEL [cite: 19]
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.style.map(color_t).to_excel(writer, sheet_name="Programacion")
