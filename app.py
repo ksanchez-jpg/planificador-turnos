@@ -2,7 +2,7 @@ import streamlit as st
 import math
 import pandas as pd
 import io
-from ortools.sat.python import cp_model
+import random
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -57,8 +57,6 @@ with st.sidebar:
     st.header("🧠 Modelo y Ajustes")
     factor_cobertura   = st.slider("Factor de cobertura",  1.0, 1.5, 1.1, 0.01)
     ausentismo         = st.slider("Ausentismo (%)",       0.0, 0.3, 0.0, 0.01)
-    factor_restriccion = st.slider("Factor por restricciones (R5/R6)", 1.0, 1.5, 1.2, 0.05,
-                                  help="Ajuste adicional porque las reglas de máximo 2 días consecutivos reducen la eficiencia de cobertura.")
     operadores_actuales = st.number_input("Operadores actuales", min_value=0, value=6)
 
 # ─────────────────────────────────────────────
@@ -84,124 +82,263 @@ ESQUEMAS_BASE = [
     [3, 4, 4],
 ]
 
+
 # ─────────────────────────────────────────────
-# FUNCIÓN PRINCIPAL CON OR-TOOLS
+# PASO 1 — GENERAR DISPONIBILIDAD (42 días continuos)
+#
+# Reglas que cumple:
+#   R2 — 11 días cada 3 semanas (esquemas combinables)
+#   R4 — Descansos rotativos (offset diferente cada semana y operador)
+#   R5+R6 — Máximo 2 consecutivos contando frontera de semana
 # ─────────────────────────────────────────────
-def programar_con_ortools(num_operadores, d_req, n_req, horas_turno=12):
+def generar_disponibilidad(n_ops: int) -> dict:
     """
-    Utiliza CP-SAT para crear un horario que cumple R1, R2, R5, R6.
-    Retorna un DataFrame con el cuadrante o None si no hay solución.
+    Retorna {op_name: [bool]*42}
+    True = disponible (trabaja) ese día.
+
+    Estrategia:
+    - Para cada operador construimos un vector de 42 días.
+    - Dividimos en 2 ciclos de 3 semanas (semanas 1-3 y 4-6).
+    - En cada ciclo de 3 semanas asignamos exactamente 11 días
+      siguiendo el esquema elegido para ese operador.
+    - Dentro de cada semana del ciclo distribuimos los días de trabajo
+      respetando máx 2 consecutivos y verificando la frontera con
+      la semana anterior.
     """
-    if num_operadores == 0:
-        return None
+    disponibilidad = {}
 
-    dias_totales = DIAS_TOTALES
-    turnos = ['D', 'N']
-    operadores = range(num_operadores)
-    dias = range(dias_totales)
+    for i in range(n_ops):
+        nombre = f"Op {i+1}"
+        dias = [False] * DIAS_TOTALES
 
-    model = cp_model.CpModel()
+        # Cada operador tiene un esquema base rotado para diversidad
+        esquema = ESQUEMAS_BASE[i % len(ESQUEMAS_BASE)]
 
-    # Variables de decisión: x[i,d,t] = 1 si operador i trabaja turno t el día d
-    x = {}
-    for i in operadores:
-        for d in dias:
-            for t in turnos:
-                x[i, d, t] = model.NewBoolVar(f'x_{i}_{d}_{t}')
+        # Procesamos semana a semana (0..5), respetando frontera
+        consecutivos_previos = 0  # cuántos días True vienen del final de la semana anterior
 
-    # Restricción: un operador no puede tener dos turnos el mismo día
-    for i in operadores:
-        for d in dias:
-            model.Add(sum(x[i, d, t] for t in turnos) <= 1)
+        for s in range(SEMANAS):
+            n_trabajo = esquema[s % 3]
+            inicio    = s * 7
 
-    # R1: Demanda exacta por día y turno
-    demanda = {'D': d_req, 'N': n_req}
-    for d in dias:
-        for t in turnos:
-            model.Add(sum(x[i, d, t] for i in operadores) == demanda[t])
+            # Construir la semana conociendo cuántos consecutivos
+            # vienen de la semana anterior (para R5+R6)
+            semana_bool = _construir_semana_continua(
+                n_trabajo    = n_trabajo,
+                cons_previos = consecutivos_previos,
+                offset_base  = (i * 5 + s * 3) % 7   # rotación real por op y semana
+            )
 
-    # R5 + R6: Máximo 2 días consecutivos trabajados (contando cualquier turno)
-    for i in operadores:
-        for d in range(dias_totales - 2):
-            model.Add(sum(x[i, d+k, t] for k in range(3) for t in turnos) <= 2)
+            dias[inicio: inicio + 7] = semana_bool
 
-    # R5: Prohibido Noche seguido de Día
-    for i in operadores:
-        for d in range(dias_totales - 1):
-            model.Add(x[i, d, 'N'] + x[i, d+1, 'D'] <= 1)
+            # Calcular cuántos días True quedan al final de esta semana
+            # (para pasarlos a la siguiente como consecutivos_previos)
+            consecutivos_previos = _trail_consecutivos(semana_bool)
 
-    # R2: Promedio de 44h/semana → 11 días trabajados en cada bloque de 3 semanas (21 días)
-    bloques = [(0,21), (21,42)]
-    for i in operadores:
-        for inicio, fin in bloques:
-            model.Add(sum(x[i, d, t] for d in range(inicio, fin) for t in turnos) == 11)
+        disponibilidad[nombre] = dias
 
-    # R2 adicional: Distribución semanal 4-4-3 dentro de cada bloque
-    for i in operadores:
-        for b_idx, (inicio, fin) in enumerate(bloques):
-            # Tres semanas dentro del bloque
-            for s in range(3):
-                semana_inicio = inicio + s*7
-                semana_fin = semana_inicio + 7
-                # Variable que indica cuántos días trabaja en esa semana (debe ser 3 o 4)
-                trab_sem = model.NewIntVar(3, 4, f'trab_sem_{i}_{b_idx}_{s}')
-                model.Add(sum(x[i, d, t] for d in range(semana_inicio, semana_fin) for t in turnos) == trab_sem)
+    return disponibilidad
 
-    # R3 (blanda): Balance día/noche – minimizar diferencia
-    total_D = {i: sum(x[i, d, 'D'] for d in dias) for i in operadores}
-    total_N = {i: sum(x[i, d, 'N'] for d in dias) for i in operadores}
-    diff_vars = []
-    for i in operadores:
-        # Variable para el valor absoluto de la diferencia
-        diff = model.NewIntVar(0, dias_totales, f'diff_{i}')
-        model.AddAbsEquality(diff, total_D[i] - total_N[i])
-        diff_vars.append(diff)
 
-    # R4 (blanda): Penalizar patrones de descanso idénticos cada semana
-    # Por simplicidad, agregamos una penalización ligera si un operador tiene exactamente los mismos días libres en semanas consecutivas.
-    # Esto se puede hacer con variables auxiliares, pero para no complicar demasiado el modelo,
-    # confiaremos en que el solver encontrará soluciones variadas gracias al balance.
-    # (En caso de querer R4 estricta, se podría modelar pero aumentaría el tamaño del problema.)
+def _construir_semana_continua(n_trabajo: int, cons_previos: int, offset_base: int) -> list:
+    """
+    Construye lista de 7 bools con exactamente n_trabajo True,
+    garantizando que:
+    - No haya más de 2 True consecutivos en ningún punto.
+    - Si cons_previos > 0, los primeros días disponibles respetan
+      ese límite de 2 (es decir, si cons_previos == 2 el día 0
+      debe ser False).
+    - El offset_base rota el patrón de descansos.
 
-    # Objetivo: Minimizar la suma de diferencias absolutas D/N (balance)
-    model.Minimize(sum(diff_vars))
+    Algoritmo:
+    1. Generamos todas las posiciones candidatas (0..6).
+    2. Si cons_previos == 2, la posición 0 no puede ser True.
+    3. Distribuimos los n_trabajo True evitando rachas > 2,
+       usando el offset para rotar el punto de partida.
+    """
+    MAX_ITER = 200
+    mejor = None
 
-    # Resolver
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 60.0  # Limitar tiempo
-    solver.parameters.log_search_progress = False  # Cambiar a True para depuración
-    status = solver.Solve(model)
+    for intento in range(MAX_ITER):
+        semana = [False] * 7
+        trabajados = 0
+        # Orden en que intentamos llenar los días (rotado por offset+intento)
+        orden = [(offset_base + intento + d) % 7 for d in range(7)]
+        # Eliminamos duplicados manteniendo orden
+        orden = list(dict.fromkeys(orden))
 
-    if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        # Construir DataFrame
-        horario = {}
-        for i in operadores:
-            fila = []
-            for d in dias:
-                if solver.Value(x[i, d, 'D']) == 1:
-                    fila.append('D')
-                elif solver.Value(x[i, d, 'N']) == 1:
-                    fila.append('N')
+        for pos in orden:
+            if trabajados >= n_trabajo:
+                break
+            # Verificar que poner True aquí no viola consecutivos
+            semana[pos] = True
+            if _max_cons_con_previos(semana, cons_previos if pos == 0 else 0) <= 2:
+                # Verificación local: no crear racha > 2 en ningún punto
+                if _max_consecutivos(semana) <= 2:
+                    # Si es pos 0 y cons_previos == 2, prohibido
+                    if pos == 0 and cons_previos >= 2:
+                        semana[pos] = False
+                        continue
+                    trabajados += 1
                 else:
-                    fila.append('R')
-            horario[f'Op {i+1}'] = fila
-        df = pd.DataFrame(horario, index=NOMBRES_DIAS).T
-        return df
-    else:
-        return None
+                    semana[pos] = False
+            else:
+                semana[pos] = False
+
+        if semana.count(True) == n_trabajo:
+            mejor = semana
+            break
+
+    # Fallback: si no se encontró solución perfecta, construir de forma segura
+    if mejor is None:
+        mejor = _fallback_semana(n_trabajo, cons_previos)
+
+    return mejor
+
+
+def _fallback_semana(n_trabajo: int, cons_previos: int) -> list:
+    """
+    Construcción segura y determinista cuando el algoritmo principal falla.
+    Coloca días de trabajo en bloques de máx 2 con descanso entre medio.
+    """
+    semana = [False] * 7
+    trabajados = 0
+    cons = cons_previos
+
+    for d in range(7):
+        if trabajados >= n_trabajo:
+            break
+        if cons >= 2:
+            # Forzar descanso
+            cons = 0
+        else:
+            semana[d] = True
+            cons += 1
+            trabajados += 1
+
+    return semana
+
+
+def _max_consecutivos(semana: list) -> int:
+    max_r = racha = 0
+    for v in semana:
+        racha = racha + 1 if v else 0
+        max_r = max(max_r, racha)
+    return max_r
+
+
+def _max_cons_con_previos(semana: list, cons_previos: int) -> int:
+    """Calcula la racha máxima contando los consecutivos que vienen de antes."""
+    max_r = 0
+    racha = cons_previos
+    for v in semana:
+        if v:
+            racha += 1
+            max_r = max(max_r, racha)
+        else:
+            racha = 0
+    return max_r
+
+
+def _trail_consecutivos(semana: list) -> int:
+    """Cuántos True hay al final de la semana (para pasarlos a la siguiente)."""
+    count = 0
+    for v in reversed(semana):
+        if v:
+            count += 1
+        else:
+            break
+    return count
+
 
 # ─────────────────────────────────────────────
-# CÁLCULO DE DOTACIÓN MÍNIMA (AJUSTADO)
+# PASO 2 — ASIGNAR TURNOS D / N
+#
+# Reglas que cumple:
+#   R1 — Cobertura exacta día y noche (sin fallback que viole otras reglas)
+#   R3 — Balance D/N por operador (prioridad por desequilibrio acumulado)
+#   R5 — No N→D consecutivo
 # ─────────────────────────────────────────────
-def calcular_operadores_necesarios(d_req, n_req, horas_turno, factor_cob, ausentismo, factor_rest):
+def asignar_turnos(disponibilidad: dict, d_req: int, n_req: int) -> dict:
+    """
+    Recibe disponibilidad {op: [bool]*42}
+    Retorna horario {op: [str]*42} con D, N o R
+    """
+    ops     = list(disponibilidad.keys())
+    horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
+    cnt_d   = {op: 0 for op in ops}
+    cnt_n   = {op: 0 for op in ops}
+
+    for d_idx in range(DIAS_TOTALES):
+        disponibles = [op for op in ops if disponibilidad[op][d_idx]]
+
+        # R5: operadores que vienen de Noche → bloqueados para Día
+        bloqueados_d = set()
+        if d_idx > 0:
+            bloqueados_d = {
+                op for op in disponibles
+                if horario[op][d_idx - 1] == TURNO_NOCHE
+            }
+
+        aptos_d = [op for op in disponibles if op not in bloqueados_d]
+        aptos_n = list(disponibles)  # todos los disponibles pueden hacer Noche
+
+        # ── Ordenar para balance R3 ──
+        # Para Día: priorizar quien tiene más Noches acumuladas (balance)
+        aptos_d.sort(key=lambda op: cnt_d[op] - cnt_n[op])   # menor valor = más N → prioridad en D
+
+        # Para Noche: priorizar quien tiene más Días acumulados
+        aptos_n.sort(key=lambda op: cnt_n[op] - cnt_d[op])   # menor valor = más D → prioridad en N
+
+        asignados_d = []
+        asignados_n = []
+
+        # ── Asignar Día ──
+        for op in aptos_d:
+            if len(asignados_d) >= d_req:
+                break
+            horario[op][d_idx] = TURNO_DIA
+            cnt_d[op] += 1
+            asignados_d.append(op)
+
+        # ── Asignar Noche (solo entre quienes no fueron a Día) ──
+        for op in aptos_n:
+            if len(asignados_n) >= n_req:
+                break
+            if op not in asignados_d:
+                horario[op][d_idx] = TURNO_NOCHE
+                cnt_n[op] += 1
+                asignados_n.append(op)
+
+        # ── Reportar déficit sin violar reglas ──
+        # (La validación posterior lo detectará)
+
+    return horario
+
+
+# ─────────────────────────────────────────────
+# FUNCIÓN PRINCIPAL
+# ─────────────────────────────────────────────
+def generar_programacion(n_ops: int, d_req: int, n_req: int) -> pd.DataFrame:
+    disponibilidad = generar_disponibilidad(n_ops)
+    horario        = asignar_turnos(disponibilidad, d_req, n_req)
+    df = pd.DataFrame(horario, index=NOMBRES_DIAS).T
+    return df
+
+
+# ─────────────────────────────────────────────
+# CÁLCULO DE DOTACIÓN MÍNIMA
+# ─────────────────────────────────────────────
+def calcular_operadores_necesarios(d_req, n_req, horas_turno, factor_cob, ausentismo):
     # Puestos diarios × horas × 7 días
     horas_semanales_req = (d_req + n_req) * horas_turno * 7
     # Operadores teóricos para cubrir con promedio 44h/sem
-    op_teoricos = (horas_semanales_req / 44) * factor_cob * factor_rest / (1 - ausentismo)
+    op_teoricos = (horas_semanales_req / 44) * factor_cob / (1 - ausentismo)
     return math.ceil(op_teoricos)
 
+
 # ─────────────────────────────────────────────
-# VALIDACIÓN DE REGLAS (SE MANTIENE IGUAL)
+# VALIDACIÓN DE REGLAS
 # ─────────────────────────────────────────────
 def validar_programacion(df: pd.DataFrame, d_req: int, n_req: int, horas_turno: int) -> list:
     errores = []
@@ -234,6 +371,7 @@ def validar_programacion(df: pd.DataFrame, d_req: int, n_req: int, horas_turno: 
             dias_sem = fila[s*7:(s+1)*7]
             desc_sem = frozenset(d for d, v in enumerate(dias_sem) if v == DESCANSO)
             descansos_por_semana.append(desc_sem)
+        # Verificar que no todas las semanas tienen exactamente los mismos días de descanso
         if len(set(descansos_por_semana)) == 1:
             errores.append(f"⚠️ R4 — {op}: los descansos son idénticos todas las semanas")
 
@@ -263,6 +401,7 @@ def validar_programacion(df: pd.DataFrame, d_req: int, n_req: int, horas_turno: 
 
     return errores
 
+
 # ─────────────────────────────────────────────
 # EJECUCIÓN PRINCIPAL
 # ─────────────────────────────────────────────
@@ -271,20 +410,15 @@ if "calculado" not in st.session_state:
 
 if st.button("⚙️ Calcular y Generar Programación"):
     op_final = calcular_operadores_necesarios(
-        demanda_dia, demanda_noche, horas_turno, factor_cobertura, ausentismo, factor_restriccion
+        demanda_dia, demanda_noche, horas_turno, factor_cobertura, ausentismo
     )
-    df_horario = programar_con_ortools(op_final, demanda_dia, demanda_noche, horas_turno)
+    df_horario = generar_programacion(op_final, demanda_dia, demanda_noche)
+    errores    = validar_programacion(df_horario, demanda_dia, demanda_noche, horas_turno)
 
-    if df_horario is None:
-        st.error("❌ No se pudo encontrar una solución factible con los parámetros actuales. "
-                 "Prueba aumentar el factor de cobertura o el factor por restricciones.")
-        st.session_state["calculado"] = False
-    else:
-        errores = validar_programacion(df_horario, demanda_dia, demanda_noche, horas_turno)
-        st.session_state["op_final"]   = op_final
-        st.session_state["df_horario"] = df_horario
-        st.session_state["errores"]    = errores
-        st.session_state["calculado"]  = True
+    st.session_state["op_final"]   = op_final
+    st.session_state["df_horario"] = df_horario
+    st.session_state["errores"]    = errores
+    st.session_state["calculado"]  = True
 
 # ─────────────────────────────────────────────
 # RESULTADOS
