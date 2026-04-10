@@ -26,9 +26,9 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE PERSONAL (44H)")
-st.caption("Reporte Completo: Cálculo de contratación, Balance de Horas y Validación de Cobertura.")
+st.caption("Control de Nómina: Desglose de turnos D/N, cumplimiento de 132h y métricas de contratación.")
 
-# 2. SIDEBAR - PARÁMETROS COMPLETOS
+# 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
     st.header("📊 Parámetros Operativos")
     demanda_dia = st.number_input("Operadores requeridos (Día)", min_value=1, value=4)
@@ -48,7 +48,7 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN (44H CADA 3 SEMANAS)
-def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
+def generar_programacion_detallada(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
@@ -62,7 +62,6 @@ def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
             dia_sem = d % 7
             if dia_sem >= d_semana: continue
             
-            # Candidatos: Máximo 3 seguidos y meta de 11 turnos por bloque
             aptos = [op for op in ops if racha[op] < 3 and turnos_bloque[op] < 11]
             aptos.sort(key=lambda x: (turnos_bloque[x], noches_acum[x]))
             
@@ -80,7 +79,6 @@ def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
             aptos_d = sorted([op for op in aptos if op not in ya_n and op not in hizo_n_ayer], 
                              key=lambda x: (turnos_bloque[x], -noches_acum[x]))
             
-            # Cálculo de cupo para distribuir refuerzos
             turnos_restantes = (n_ops * 11) - sum(turnos_bloque.values())
             dias_restantes = bloque.stop - d
             cupo_dia = d_req + 1 if turnos_restantes > (dias_restantes * (d_req + n_req)) else d_req
@@ -100,14 +98,13 @@ def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # 5. EJECUCIÓN
-if st.button("🚀 Calcular Programación y Reportes"):
-    # Cálculo de personal: (Total turnos ciclo / 11 turnos por op)
+if st.button("🚀 Calcular Programación y Generar Reporte"):
     total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_base = math.ceil(total_turnos_ciclo / 11)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df"] = generar_programacion_flexible(op_final, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df"] = generar_programacion_detallada(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
     st.session_state["calculado"] = True
 
@@ -117,35 +114,39 @@ if st.session_state.get("calculado"):
     op_final = st.session_state["op_final"]
     faltantes = max(0, op_final - operadores_actuales)
     
-    # --- PANELES DE MÉTRICAS VERDES ---
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Operadores Necesarios</div>
-            <div class="metric-value-dark">{op_final}</div>
-        </div>''', unsafe_allow_html=True)
-    with col2:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Operadores a Contratar</div>
-            <div class="metric-value-dark">{faltantes}</div>
-        </div>''', unsafe_allow_html=True)
-    with col3:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Meta cada 3 Semanas</div>
-            <div class="metric-value-dark">132h</div>
-        </div>''', unsafe_allow_html=True)
+    # --- PANELES VERDES ---
+    c1, c2, c3 = st.columns(3)
+    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Operadores Necesarios</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Operadores a Contratar</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Ciclo</div><div class="metric-value-dark">132h</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Estilos de color para tablas y Excel
+    # Estilos
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
 
-    # --- TABLA DE BALANCE ---
+    # --- TABLA DE BALANCE DETALLADA ---
     stats = []
     for op in df.index:
-        c1 = sum(1 for x in df.loc[op][:21] if x != DESCANSO)
-        c2 = sum(1 for x in df.loc[op][21:] if x != DESCANSO)
-        stats.append({"Operador": op, "Turnos S1-3": c1, "Horas C1": c1*12, "Turnos S4-6": c2, "Horas C2": c2*12, "Cumple 132h": "✅ SI" if c1==11 and c2==11 else "❌ NO"})
+        fila = df.loc[op]
+        # Bloque 1 (Días 0-20)
+        d1 = sum(1 for x in fila[:21] if x == TURNO_DIA)
+        n1 = sum(1 for x in fila[:21] if x == TURNO_NOCHE)
+        # Bloque 2 (Días 21-41)
+        d2 = sum(1 for x in fila[21:] if x == TURNO_DIA)
+        n2 = sum(1 for x in fila[21:] if x == TURNO_NOCHE)
+        
+        stats.append({
+            "Operador": op,
+            "Días (D) S1-3": d1,
+            "Noches (N) S1-3": n1,
+            "Total S1-3": d1 + n1,
+            "Días (D) S4-6": d2,
+            "Noches (N) S4-6": n2,
+            "Total S4-6": d2 + n2,
+            "Horas Totales (6 Sem)": (d1 + n1 + d2 + n2) * horas_turno,
+            "Cumple 132h/Ciclo": "✅ SI" if (d1+n1)==11 and (d2+n2)==11 else "❌ NO"
+        })
     df_stats = pd.DataFrame(stats).set_index("Operador")
 
     # --- TABLA DE COBERTURA ---
@@ -153,31 +154,31 @@ if st.session_state.get("calculado"):
     for dia in NOMBRES_DIAS:
         dia_idx = NOMBRES_DIAS.index(dia) % 7
         rd, rn = (demanda_dia, demanda_noche) if dia_idx < dias_cubrir else (0, 0)
-        ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCH).sum() if 'TURNO_NOCH' in locals() else (df[dia] == "N").sum()
+        ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
         check.append({"Día": dia, "Req. D": rd, "Asig. D": ad, "Req. N": rn, "Asig. N": an, "Estado": "✅ OK" if ad>=rd and an>=rn else "❌ FALTA"})
     df_check = pd.DataFrame(check).set_index("Día")
 
-    # Visualización en la App
+    # Visualización App
     st.subheader("📅 Cuadrante de Turnos")
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
-    st.subheader("📊 Balance de Carga Laboral")
-    st.dataframe(df_stats.style.map(lambda x: "background-color: #D4EDDA; font-weight: bold" if x == 132 else "", subset=["Horas C1", "Horas C2"]), use_container_width=True)
+    st.subheader("📊 Balance de Turnos Día/Noche")
+    st.dataframe(df_stats, use_container_width=True)
 
     st.subheader("✅ Validación de Cobertura Diaria")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # EXPORTACIÓN MULTI-HOJA CON COLORES
+    # EXPORTACIÓN
     st.subheader("📥 Descargar Reporte Completo")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.style.map(style_func).to_excel(writer, sheet_name="Cuadrante")
-        df_stats.to_excel(writer, sheet_name="Balance_44h")
+        df_stats.to_excel(writer, sheet_name="Balance_Detallado")
         df_check.to_excel(writer, sheet_name="Validacion_Cobertura")
     
     st.download_button(
-        label="⬇️ Descargar Excel (3 Hojas con Colores)",
+        label="⬇️ Descargar Excel (Detalle D/N incluido)",
         data=output.getvalue(),
-        file_name="reporte_programacion_y_contratacion.xlsx",
+        file_name="reporte_nómina_detallado.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
