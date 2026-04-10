@@ -18,9 +18,9 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE PERSONAL (44H)")
-st.caption("Modelo Dinámico: 132h exactas por ciclo, máximo 3 días seguidos permitidos para cumplimiento.")
+st.caption("Reporte Completo: Cuadrante, Balance de Horas y Validación de Cobertura.")
 
-# 2. SIDEBAR - TODOS LOS PARÁMETROS SOLICITADOS
+# 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
     st.header("📊 Parámetros Operativos")
     demanda_dia = st.number_input("Operadores requeridos (Día)", min_value=1, value=4)
@@ -39,28 +39,21 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN DINÁMICO
+# 4. MOTOR DE PROGRAMACIÓN (44H CADA 3 SEMANAS)
 def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
-    
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
     racha = {op: 0 for op in ops}
 
-    # Procesar por bloques de 3 semanas (21 días) para asegurar las 132h
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
         turnos_bloque = {op: 0 for op in ops}
-        
         for d in bloque:
             dia_sem = d % 7
             if dia_sem >= d_semana: continue
-
-            # 1. Candidatos: No más de 3 seguidos y que no hayan llegado a 11 en el ciclo
             aptos = [op for op in ops if racha[op] < 3 and turnos_bloque[op] < 11]
-            
-            # 2. Asignar NOCHE primero (Equidad)
             aptos.sort(key=lambda x: (turnos_bloque[x], noches_acum[x]))
             asignados_n = []
             for op in aptos:
@@ -70,22 +63,13 @@ def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
                     turnos_bloque[op] += 1
                     noches_acum[op] += 1
                     racha[op] += 1
-            
-            # 3. Asignar DÍA (Respetando regla N->D)
             ya_n = set(asignados_n)
             hizo_n_ayer = {op for op in aptos if d > 0 and horario[op][d-1] == TURNO_NOCHE}
-            aptos_d = [op for op in aptos if op not in ya_n and op not in hizo_n_ayer]
-            
-            # Prioridad a los que llevan menos turnos para que todos lleguen a 11
-            aptos_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x]))
-            
-            # Cálculo dinámico de cupo (para absorber los 8 turnos extra del ciclo)
-            turnos_restantes_ciclo = (n_ops * 11) - sum(turnos_bloque.values())
-            dias_restantes_ciclo = bloque.stop - d
-            cupo_dia = d_req
-            if turnos_restantes_ciclo > (dias_restantes_ciclo * (d_req + n_req)):
-                cupo_dia = d_req + 1 # Permitimos un refuerzo para completar horas
-
+            aptos_d = sorted([op for op in aptos if op not in ya_n and op not in hizo_n_ayer], 
+                             key=lambda x: (turnos_bloque[x], -noches_acum[x]))
+            turnos_restantes = (n_ops * 11) - sum(turnos_bloque.values())
+            dias_restantes = bloque.stop - d
+            cupo_dia = d_req + 1 if turnos_restantes > (dias_restantes * (d_req + n_req)) else d_req
             asignados_d = []
             for op in aptos_d:
                 if len(asignados_d) < cupo_dia:
@@ -93,58 +77,67 @@ def generar_programacion_flexible(n_ops, d_req, n_req, d_semana):
                     asignados_d.append(op)
                     turnos_bloque[op] += 1
                     racha[op] += 1
-
-            # 4. Resetear racha para los que descansan
             trabajaron = set(asignados_n) | set(asignados_d)
             for op in ops:
-                if op not in trabajaron:
-                    racha[op] = 0
-
+                if op not in trabajaron: racha[op] = 0
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # 5. EJECUCIÓN
-if st.button("🚀 Calcular Programación Perfecta 132h"):
-    # Con 16 personas para 4+4, el cálculo es exacto.
+if st.button("🚀 Calcular Programación y Reportes"):
     op_final = math.ceil(((demanda_dia + demanda_noche) * 42 / 22) * factor_cobertura / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
-
-    df = generar_programacion_flexible(op_final, demanda_dia, demanda_noche, dias_cubrir)
-    st.session_state["df"] = df
+    st.session_state["df"] = generar_programacion_flexible(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
-# 6. RESULTADOS
+# 6. RESULTADOS Y EXPORTACIÓN
 if "df" in st.session_state:
     df = st.session_state["df"]
     op_final = st.session_state["op_final"]
-    faltantes = max(0, op_final - operadores_actuales)
+    
+    # Mallas de Estilo
+    style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
 
-    col1, col2, col3 = st.columns(3)
-    with col1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Operadores</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with col2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratar</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
-    with col3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Horas Ciclo</div><div class="metric-value-dark">132.0 (44h)</div></div>', unsafe_allow_html=True)
-
-    st.subheader("📅 Cuadrante (Flexible: Máx 3 días seguidos)")
-    st.dataframe(df.style.map(lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"), use_container_width=True)
-
-    # Validación 132h (Regla de Oro)
-    st.subheader("📊 Validación: 132 Horas cada 3 Semanas")
+    # --- TABLA DE BALANCE ---
     stats = []
     for op in df.index:
         c1 = sum(1 for x in df.loc[op][:21] if x != DESCANSO)
         c2 = sum(1 for x in df.loc[op][21:] if x != DESCANSO)
-        stats.append({"Operador": op, "Turnos S1-3": c1, "Horas C1": c1*12, "Turnos S4-6": c2, "Horas C2": c2*12, "Promedio h/sem": round(((c1+c2)*12)/6, 1), "Cumple 44h": "✅ SI" if c1 == 11 and c2 == 11 else "❌ NO"})
-    st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
+        stats.append({"Operador": op, "Turnos S1-3": c1, "Horas C1": c1*12, "Turnos S4-6": c2, "Horas C2": c2*12, "Cumple 132h": "✅ SI" if c1==11 and c2==11 else "❌ NO"})
+    df_stats = pd.DataFrame(stats).set_index("Operador")
 
-    # Cobertura Diaria
-    st.subheader("✅ Validación de Cobertura Diaria")
+    # --- TABLA DE COBERTURA ---
     check = []
     for dia in NOMBRES_DIAS:
+        dia_idx = NOMBRES_DIAS.index(dia) % 7
+        rd, rn = (demanda_dia, demanda_noche) if dia_idx < dias_cubrir else (0, 0)
         ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
-        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Estado": "✅ OK" if ad >= demanda_dia and an >= demanda_noche else "❌ FALTA"})
-    st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
+        check.append({"Día": dia, "Req. D": rd, "Asig. D": ad, "Req. N": rn, "Asig. N": an, "Estado": "✅ OK" if ad>=rd and an>=rn else "❌ FALTA"})
+    df_check = pd.DataFrame(check).set_index("Día")
 
-    # Excel
+    # UI Streamlit
+    st.subheader("📅 Cuadrante de Turnos")
+    st.dataframe(df.style.map(style_func), use_container_width=True)
+
+    st.subheader("📊 Validación: 132 Horas cada 3 Semanas")
+    st.dataframe(df_stats, use_container_width=True)
+
+    st.subheader("✅ Validación de Cobertura Diaria")
+    st.dataframe(df_check.T, use_container_width=True)
+
+    # EXPORTACIÓN MULTI-HOJA
+    st.subheader("📥 Descargar Reporte Completo")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.style.map(lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}").to_excel(writer, sheet_name="Cuadrante")
-    st.download_button("⬇️ Descargar Excel", output.getvalue(), "plan_44h_flexible.xlsx")
+        # Hoja 1: Cuadrante con Colores
+        df.style.map(style_func).to_excel(writer, sheet_name="Cuadrante")
+        # Hoja 2: Balance de Horas
+        df_stats.to_excel(writer, sheet_name="Balance_44h")
+        # Hoja 3: Validación de Cobertura
+        df_check.to_excel(writer, sheet_name="Validacion_Cobertura")
+    
+    st.download_button(
+        label="⬇️ Descargar Excel (3 Hojas)",
+        data=output.getvalue(),
+        file_name="reporte_programacion_completo.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
