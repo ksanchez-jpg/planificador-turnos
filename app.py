@@ -5,9 +5,9 @@ import io
 import random
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN Y ESTILO (Basado en tus preferencias)
+# CONFIGURACIÓN Y ESTILO
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="Planificador de Contratación", layout="wide")
+st.set_page_config(page_title="Planificador 42 Horas", layout="wide")
 
 st.markdown("""
 <style>
@@ -15,7 +15,6 @@ st.markdown("""
 html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
 
-/* Bloques de Métricas Verdes */
 .metric-box-green {
     background: #10B981; 
     color: #064E3B;
@@ -24,27 +23,17 @@ h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
     text-align: center;
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
-.metric-label-dark { 
-    font-size: 0.75rem; 
-    color: #064E3B; 
-    text-transform: uppercase; 
-    font-weight: 600; 
-    letter-spacing: 0.05em;
-}
-.metric-value-dark { 
-    font-size: 2.2rem; 
-    font-family: 'IBM Plex Mono', monospace; 
-    font-weight: 700; 
-}
-.stButton > button { background: #0F172A; color: #F8FAFC; border-radius: 4px; }
+.metric-label-dark { font-size: 0.75rem; color: #064E3B; text-transform: uppercase; font-weight: 600; }
+.metric-value-dark { font-size: 2.2rem; font-family: 'IBM Plex Mono', monospace; font-weight: 700; }
+.stButton > button { background: #0F172A; color: #F8FAFC; border-radius: 4px; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓 PROGRAMACIÓN Y CONTRATACIÓN")
-st.caption("Cálculo de brecha de personal y generación de cuadrante con exportación a color.")
+st.title("🗓 PROGRAMACIÓN Y CONTRATACIÓN (42H)")
+st.caption("Ajuste de jornada legal: 10.5 turnos promedio cada 3 semanas.")
 
 # ─────────────────────────────────────────────
-# SIDEBAR — PARÁMETROS OPERATIVOS
+# SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.header("📊 Parámetros Operativos")
@@ -59,11 +48,12 @@ with st.sidebar:
     operadores_actuales = st.number_input("Operadores actuales (Nómina)", min_value=0, value=12)
 
 # ─────────────────────────────────────────────
-# CONSTANTES
+# CONSTANTES (Ajustadas a 42h)
 # ─────────────────────────────────────────────
 SEMANAS      = 6
 DIAS_TOTALES = 42
-TURNOS_META  = 22 # Meta para 44h promedio
+# 42h/sem * 6 sem = 252h totales. 252 / 12h = 21 turnos exactos.
+TURNOS_META_6_SEM = 21 
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]]
 
@@ -81,9 +71,9 @@ def color_cumple(val):
     return ""
 
 # ─────────────────────────────────────────────
-# MOTOR DE PROGRAMACIÓN
+# MOTOR DE PROGRAMACIÓN (42H PROMEDIO)
 # ─────────────────────────────────────────────
-def generar_programacion_final(n_ops, d_req, n_req, dias_op):
+def generar_programacion_42h(n_ops, d_req, n_req, dias_op):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
 
@@ -97,10 +87,14 @@ def generar_programacion_final(n_ops, d_req, n_req, dias_op):
         if dia_semana_index >= dias_op:
             continue
 
-        aptos = [op for op in ops if racha_trabajo[op] < 2 and turnos_realizados[op] < TURNOS_META]
-        hizo_n_ayer = {op for op in aptos if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE}
+        # Regla 5: Max 2 seguidos | Regla 2: Max 21 turnos en el ciclo
+        aptos = [op for op in ops if racha_trabajo[op] < 2 and turnos_realizados[op] < TURNOS_META_6_SEM]
         
+        # Regla 6: No Noche -> Día
+        hizo_n_ayer = {op for op in aptos if d_idx > 0 and horario[op][d_idx-1] == TURNO_NOCHE}
         candidatos_dia = [op for op in aptos if op not in hizo_n_ayer]
+        
+        # Balance D/N y Prioridad por deuda de turnos
         candidatos_dia.sort(key=lambda x: (turnos_realizados[x], -noches_acum[x]))
         
         asignados_d = candidatos_dia[:d_req]
@@ -130,13 +124,16 @@ def generar_programacion_final(n_ops, d_req, n_req, dias_op):
 # ─────────────────────────────────────────────
 # EJECUCIÓN
 # ─────────────────────────────────────────────
-if st.button("🚀 Calcular y Generar Programación"):
+if st.button("🚀 Calcular y Generar Programación 42H"):
+    # Cálculo: (Puestos * Días * 6 semanas) / 21 turnos meta
     total_turnos_necesarios = (demanda_dia + demanda_noche) * dias_cubrir * 6
-    op_base = math.ceil(total_turnos_necesarios / TURNOS_META)
+    op_base = math.ceil(total_turnos_necesarios / TURNOS_META_6_SEM)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
+    
+    # Mínimo para asegurar rotación (8 personas para demanda 4+4)
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df_horario"] = generar_programacion_final(op_final, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df_horario"] = generar_programacion_42h(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
     st.session_state["calculado"] = True
 
@@ -148,71 +145,44 @@ if st.session_state.get("calculado"):
     op_final = st.session_state["op_final"]
     faltantes = max(0, op_final - operadores_actuales)
 
-    # MÉTRICAS EN BLOQUES VERDES
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Operadores Necesarios</div>
-            <div class="metric-value-dark">{op_final}</div>
-        </div>''', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Operadores Necesarios</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
     with col2:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Operadores a Contratar</div>
-            <div class="metric-value-dark">{faltantes}</div>
-        </div>''', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Operadores a Contratar</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown(f'''<div class="metric-box-green">
-            <div class="metric-label-dark">Promedio h/sem</div>
-            <div class="metric-value-dark">44.0</div>
-        </div>''', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Promedio h/sem</div><div class="metric-value-dark">42.0</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # CUADRANTE WEB
-    st.subheader("📅 Cuadrante de Turnos")
+    st.subheader("📅 Cuadrante de Turnos (Máx 2 días)")
     st.dataframe(df.style.map(style_t), use_container_width=True)
 
-    # BALANCE DE CARGA
-    st.subheader("📊 Balance de Carga Laboral")
+    # Balance 42h
+    st.subheader("📊 Balance de Carga Laboral (Meta 42h)")
     stats = []
     for op in df.index:
         n, d = (df.loc[op] == "N").sum(), (df.loc[op] == "D").sum()
-        stats.append({"Operador": op, "Día (D)": d, "Noche (N)": n, "Total Turnos": n+d, "Prom h/sem": round((n+d)*12/6, 1)})
+        stats.append({"Operador": op, "Día (D)": d, "Noche (N)": n, "Total": n+d, "Prom h/sem": round((n+d)*12/6, 1)})
     df_stats = pd.DataFrame(stats).set_index("Operador")
-    st.dataframe(df_stats.style.map(lambda x: "background-color:#D4EDDA;font-weight:bold" if x == 44.0 else "", subset=["Prom h/sem"]), use_container_width=True)
+    st.dataframe(df_stats.style.map(lambda x: "background-color:#D4EDDA;font-weight:bold" if x == 42.0 else "", subset=["Prom h/sem"]), use_container_width=True)
 
-    # VALIDACIÓN DE COBERTURA
+    # Cobertura
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
         dia_idx = NOMBRES_DIAS.index(dia) % 7
-        req_d_hoy = demanda_dia if dia_idx < dias_cubrir else 0
-        req_n_hoy = demanda_noche if dia_idx < dias_cubrir else 0
-        asig_d, asig_n = (df[dia] == "D").sum(), (df[dia] == "N").sum()
-        
-        check.append({
-            "Día": dia, "Req. D": req_d_hoy, "Asig. D": asig_d, 
-            "Req. N": req_n_hoy, "Asig. N": asig_n,
-            "Estado": "✅ OK" if asig_d >= req_d_hoy and asig_n >= req_n_hoy else "❌ FALTA"
-        })
+        req_d = demanda_dia if dia_idx < dias_cubrir else 0
+        req_n = demanda_noche if dia_idx < dias_cubrir else 0
+        ad, an = (df[dia] == "D").sum(), (df[dia] == "N").sum()
+        check.append({"Día": dia, "Req. D": req_d, "Asig. D": ad, "Req. N": req_n, "Asig. N": an, "Estado": "✅ OK" if ad>=req_d and an>=req_n else "❌ FALTA"})
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.style.map(color_cumple), use_container_width=True)
 
-    # EXPORTACIÓN A EXCEL CON COLORES
+    # Exportación con Colores
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
-    
-    # Aplicamos el estilo de colores al dataframe para Excel
-    df_styled = df.style.map(style_t)
-    
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_styled.to_excel(writer, sheet_name="Cuadrante")
-        df_stats.to_excel(writer, sheet_name="Balance")
+        df.style.map(style_t).to_excel(writer, sheet_name="Cuadrante")
+        df_stats.to_excel(writer, sheet_name="Balance_42h")
         df_check.to_excel(writer, sheet_name="Cobertura")
-    
-    st.download_button(
-        label="⬇️ Descargar Excel con Colores",
-        data=output.getvalue(),
-        file_name="plan_operativo_colores.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("⬇️ Descargar Excel a Color", output.getvalue(), "plan_42h_color.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
