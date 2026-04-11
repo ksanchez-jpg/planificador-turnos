@@ -120,19 +120,15 @@ if "df" in st.session_state:
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
-    # --- BALANCE DETALLADO MODIFICADO ---
     st.subheader(f"📊 Balance Detallado: {cargo}")
     stats = []
     for op in df.index:
         fila = df.loc[op]
-        # Conteo total D/N
         total_d = (fila == TURNO_DIA).sum()
         total_n = (fila == TURNO_NOCHE).sum()
-        # Horas por ciclo
         c1_turnos = sum(1 for x in fila[:21] if x != DESCANSO)
         c2_turnos = sum(1 for x in fila[21:] if x != DESCANSO)
         
-        # Secuencias (Ej: 4-4-3)
         def get_seq(data):
             w1 = sum(1 for x in data[0:7] if x != DESCANSO)
             w2 = sum(1 for x in data[7:14] if x != DESCANSO)
@@ -160,17 +156,22 @@ if "df" in st.session_state:
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # --- EXPORTACIÓN A EXCEL MEJORADA ---
+    # --- EXPORTACIÓN A EXCEL MEJORADA SEGÚN IMAGEN 2 ---
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
+    
+    # Preparar DF para exportación: El nombre del índice será el valor de la celda A1
+    df_excel = df.copy()
+    df_excel.index.name = cargo 
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Hoja 1: Programación
-        df.style.map(style_func).to_excel(writer, sheet_name="Programación", startrow=1)
-        ws1 = writer.sheets["Programación"]
-        ws1["A1"] = f"Cargo: {cargo}" # Nombre del cargo en A1
+        # Hoja 1: Programación (Empieza en A1 con el nombre del cargo como cabecera del índice)
+        df_excel.style.map(style_func).to_excel(writer, sheet_name="Programación")
         
-        # Hoja 2: Balance Detallado (Espejo de la app)
-        df_stats.to_excel(writer, sheet_name="Balance Detallado")
+        # Hoja 2: Balance Detallado
+        df_stats_excel = df_stats.copy()
+        df_stats_excel.insert(0, 'Cargo', cargo) # Reinsertamos columna cargo para el balance
+        df_stats_excel.to_excel(writer, sheet_name="Balance")
         
         # Hoja 3: Cobertura
         pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
