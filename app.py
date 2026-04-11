@@ -17,28 +17,24 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# Cambio de Título y Objetivo
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
 st.caption("Objetivo: 132 horas por ciclo, máximo 1 refuerzo por turno con programación inteligente.")
 
-# 2. SIDEBAR - PARÁMETROS LIMPIOS
+# 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
-    # Cambio de encabezado a "Parámetros"
     st.header("👤 Parámetros")
-    cargo = st.text_input("Nombre del Cargo", value="Operador")
+    cargo = st.text_input("Nombre del Cargo", value="Cosechador")
     
     st.header("📊 Parámetros Operativos")
-    # Eliminadas las "s" sobrantes en las etiquetas
-    demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=4)
-    demanda_noche = st.number_input(f"{cargo} requerido (Noche)", min_value=1, value=4)
+    demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=5)
+    demanda_noche = st.number_input(f"{cargo} requerido (Noche)", min_value=1, value=5)
     horas_turno = st.number_input("Horas por turno", min_value=1, value=12)
     dias_cubrir = st.slider("Días a cubrir por semana", 1, 7, 7)
 
     st.header("🧠 Modelo y Ajustes")
     factor_cobertura = st.slider("Factor de holgura técnica", 1.0, 1.5, 1.0, 0.01)
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    # Etiqueta de actuales corregida
-    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=16)
+    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=20)
 
 # 3. CONSTANTES
 SEMANAS = 6
@@ -120,31 +116,63 @@ if "df" in st.session_state:
     with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    # Nombre de la tabla unificado
     st.subheader("📅 Programación del Personal")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
+    # --- BALANCE DETALLADO MODIFICADO ---
     st.subheader(f"📊 Balance Detallado: {cargo}")
     stats = []
     for op in df.index:
-        c1 = sum(1 for x in df.loc[op][:21] if x != DESCANSO)
-        c2 = sum(1 for x in df.loc[op][21:] if x != DESCANSO)
-        stats.append({"Operador": op, "Cargo": cargo, "Horas S1-S3": c1*12, "Horas S4-S6": c2*12, "Estado": "✅ 44h OK" if c1==11 and c2==11 else "❌ Revisar"})
-    st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
+        fila = df.loc[op]
+        # Conteo total D/N
+        total_d = (fila == TURNO_DIA).sum()
+        total_n = (fila == TURNO_NOCHE).sum()
+        # Horas por ciclo
+        c1_turnos = sum(1 for x in fila[:21] if x != DESCANSO)
+        c2_turnos = sum(1 for x in fila[21:] if x != DESCANSO)
+        
+        # Secuencias (Ej: 4-4-3)
+        def get_seq(data):
+            w1 = sum(1 for x in data[0:7] if x != DESCANSO)
+            w2 = sum(1 for x in data[7:14] if x != DESCANSO)
+            w3 = sum(1 for x in data[14:21] if x != DESCANSO)
+            return f"{w1}-{w2}-{w3}"
+
+        stats.append({
+            "Operador": op,
+            "Turnos Día": total_d,
+            "Turnos Noche": total_n,
+            "Horas S1-S3": c1_turnos * horas_turno,
+            "Secuencia S1-S3": get_seq(fila[:21]),
+            "Horas S4-S6": c2_turnos * horas_turno,
+            "Secuencia S4-S6": get_seq(fila[21:]),
+            "Estado": "✅ 44h OK" if c1_turnos == 11 and c2_turnos == 11 else "❌ Revisar"
+        })
+    df_stats = pd.DataFrame(stats).set_index("Operador")
+    st.dataframe(df_stats, use_container_width=True)
 
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
         check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK"})
-    st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
+    df_check = pd.DataFrame(check).set_index("Día")
+    st.dataframe(df_check.T, use_container_width=True)
 
+    # --- EXPORTACIÓN A EXCEL MEJORADA ---
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.style.map(style_func).to_excel(writer, sheet_name="Cuadrante")
-        pd.DataFrame(stats).to_excel(writer, sheet_name="Balance")
+        # Hoja 1: Programación
+        df.style.map(style_func).to_excel(writer, sheet_name="Programación", startrow=1)
+        ws1 = writer.sheets["Programación"]
+        ws1["A1"] = f"Cargo: {cargo}" # Nombre del cargo en A1
+        
+        # Hoja 2: Balance Detallado (Espejo de la app)
+        df_stats.to_excel(writer, sheet_name="Balance Detallado")
+        
+        # Hoja 3: Cobertura
         pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
     
     st.download_button(
