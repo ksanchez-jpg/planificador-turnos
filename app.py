@@ -5,7 +5,7 @@ import io
 import random
 
 # 1. CONFIGURACIÓN Y ESTILO
-st.set_page_config(page_title="Planificador Maestro 44H", layout="wide")
+st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
 
 st.markdown("""
 <style>
@@ -17,25 +17,28 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓 GESTIÓN DE PROGRAMACIÓN")
-st.caption("Solución final: 132h por ciclo, máximo 1 refuerzo por turno y personalización por cargo.")
+# Cambio de Título y Objetivo
+st.title("🗓 PROGRAMACIÓN DE TURNOS")
+st.caption("Objetivo: 132 horas por ciclo, máximo 1 refuerzo por turno con programación inteligente.")
 
-# 2. SIDEBAR - PARÁMETROS
+# 2. SIDEBAR - PARÁMETROS LIMPIOS
 with st.sidebar:
-    st.header("👤 Identificación")
-    # NUEVO PARÁMETRO: Cargo
+    # Cambio de encabezado a "Parámetros"
+    st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value="Operador")
     
     st.header("📊 Parámetros Operativos")
-    demanda_dia = st.number_input(f"{cargo}s requeridos (Día)", min_value=1, value=4)
-    demanda_noche = st.number_input(f"{cargo}s requeridos (Noche)", min_value=1, value=4)
+    # Eliminadas las "s" sobrantes en las etiquetas
+    demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=4)
+    demanda_noche = st.number_input(f"{cargo} requerido (Noche)", min_value=1, value=4)
     horas_turno = st.number_input("Horas por turno", min_value=1, value=12)
     dias_cubrir = st.slider("Días a cubrir por semana", 1, 7, 7)
 
     st.header("🧠 Modelo y Ajustes")
     factor_cobertura = st.slider("Factor de holgura técnica", 1.0, 1.5, 1.0, 0.01)
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    operadores_actuales = st.number_input(f"{cargo}s actuales (Nómina)", min_value=0, value=16)
+    # Etiqueta de actuales corregida
+    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=16)
 
 # 3. CONSTANTES
 SEMANAS = 6
@@ -43,7 +46,7 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR CON RESTRICCIÓN REQ + 1
+# 4. MOTOR DE PROGRAMACIÓN
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
@@ -100,7 +103,8 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
 # 5. EJECUCIÓN
 if st.button(f"🚀 Generar Programación para {cargo}"):
     total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
-    op_final = math.ceil((total_turnos_ciclo / 11) * factor_cobertura / (1 - ausentismo))
+    op_base = math.ceil(total_turnos_ciclo / 11)
+    op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
     st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
@@ -112,11 +116,12 @@ if "df" in st.session_state:
     faltantes = max(0, op_final - operadores_actuales)
     
     c1, c2, c3 = st.columns(3)
-    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">{cargo}s Necesarios</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Brecha a Contratar</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Horas por Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader(f"📅 Cuadrante General: {cargo}")
+    # Nombre de la tabla unificado
+    st.subheader("📅 Programación del Personal")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
@@ -125,18 +130,16 @@ if "df" in st.session_state:
     for op in df.index:
         c1 = sum(1 for x in df.loc[op][:21] if x != DESCANSO)
         c2 = sum(1 for x in df.loc[op][21:] if x != DESCANSO)
-        stats.append({"Operador": op, "Cargo": cargo, "Horas C1": c1*12, "Horas C2": c2*12, "Cumple 44h": "✅ SI" if c1==11 and c2==11 else "❌ NO"})
+        stats.append({"Operador": op, "Cargo": cargo, "Horas S1-S3": c1*12, "Horas S4-S6": c2*12, "Estado": "✅ 44h OK" if c1==11 and c2==11 else "❌ Revisar"})
     st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
 
-    # Validación Cobertura
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
-        check.append({"Día": dia, "Asig. Día": ad, "Asig. Noche": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK"})
+        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK"})
     st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
-    # EXPORTACIÓN DINÁMICA
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -144,10 +147,9 @@ if "df" in st.session_state:
         pd.DataFrame(stats).to_excel(writer, sheet_name="Balance")
         pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
     
-    # EL NOMBRE DEL ARCHIVO AHORA DEPENDE DEL CARGO
     st.download_button(
         label=f"⬇️ Descargar Programación {cargo} (Excel)",
         data=output.getvalue(),
-        file_name=f"Programación_{cargo}.xlsx",
+        file_name=f"Programacion_{cargo}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
