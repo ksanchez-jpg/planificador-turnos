@@ -18,7 +18,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132 horas por ciclo, máximo 1 refuerzo por turno con programación inteligente.")
+st.caption("Objetivo: 132 horas por ciclo, bloques de 2 a 3 días y máximo 1 refuerzo por turno.")
 
 # 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
@@ -42,68 +42,100 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN
-def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
+# 4. MOTOR DE PROGRAMACIÓN CON REGLA DE BLOQUES (MIN 2 - MAX 3)
+def generar_programacion_bloques(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
 
     for bloque_idx in [0, 21]:
-        bloque = range(bloque_idx, bloque_idx + 21)
+        bloque = list(range(bloque_idx, bloque_idx + 21))
         turnos_bloque = {op: 0 for op in ops}
         
+        # Iteramos día por día para construir los bloques
         for d in bloque:
             if (d % 7) >= d_semana: continue
-            aptos = [op for op in ops if turnos_bloque[op] < 11]
-            aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO or (d > 1 and horario[op][d-2] == DESCANSO)]
             
-            aptos.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
-            asignados_n = aptos[:n_req]
+            # Identificar quiénes TRABAJARON AYER (para ver si deben seguir trabajando hoy)
+            siguen_trabajando = []
+            libres_hoy = []
+            
+            for op in ops:
+                # Calcular racha actual
+                racha = 0
+                for i in range(d-1, bloque_idx-1, -1):
+                    if horario[op][i] != DESCANSO: racha += 1
+                    else: break
+                
+                # REGLA: Si trabajó 1 solo día, HOY DEBE TRABAJAR (Min 2)
+                if racha == 1 and turnos_bloque[op] < 11:
+                    siguen_trabajando.append(op)
+                # REGLA: Si trabajó 3 días, HOY DEBE DESCANSAR (Max 3)
+                elif racha >= 3:
+                    pass 
+                # Si no tiene racha o lleva 2 días, es elegible
+                elif turnos_bloque[op] < 11:
+                    libres_hoy.append(op)
+
+            # --- ASIGNACIÓN DE NOCHE ---
+            # Prioridad 1: Los que "deben" seguir trabajando por regla de Min 2
+            # Prioridad 2: Los libres con menos turnos
+            candidatos_n = siguen_trabajando + libres_hoy
+            candidatos_n.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
+            
+            asignados_n = candidatos_n[:n_req]
             for op in asignados_n:
                 horario[op][d] = TURNO_NOCHE
                 turnos_bloque[op] += 1
                 noches_acum[op] += 1
-            
+                if op in siguen_trabajando: siguen_trabajando.remove(op)
+                if op in libres_hoy: libres_hoy.remove(op)
+
+            # --- ASIGNACIÓN DE DÍA ---
             ya_n = set(asignados_n)
             hizo_n_ayer = {op for op in ops if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE}
-            aptos_d = [op for op in aptos if op not in ya_n and op not in hizo_n_ayer]
-            aptos_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
             
-            asignados_d = aptos_d[:d_req]
+            # Filtramos candidatos para día (No N->D)
+            candidatos_d = [op for op in (siguen_trabajando + libres_hoy) if op not in ya_n and op not in hizo_n_ayer]
+            candidatos_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
+            
+            # Aplicamos restricción de Refuerzo (Max Req + 1)
+            cupo_d = d_req + 1 if (sum(turnos_bloque.values()) < (d_req + n_req) * (bloque_idx + 21 - d)) else d_req
+            
+            asignados_d = candidatos_d[:cupo_d]
             for op in asignados_d:
                 horario[op][d] = TURNO_DIA
                 turnos_bloque[op] += 1
 
+        # FASE FINAL: Ajuste para los que quedaron con 10 turnos (Inyección de bloques de 2 si es posible)
         for op in ops:
-            intentos = 0
-            while turnos_bloque[op] < 11 and intentos < 100:
-                intentos += 1
-                d_rand = random.choice(list(bloque))
-                if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana: continue
-                ocupacion_dia = sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA)
-                if ocupacion_dia >= d_req + 1: continue 
-                if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
-                racha = 0
-                for i in range(d_rand-1, bloque_idx-1, -1):
-                    if horario[op][i] != DESCANSO: racha += 1
-                    else: break
-                for i in range(d_rand+1, bloque.stop):
-                    if horario[op][i] != DESCANSO: racha += 1
-                    else: break
-                if (racha + 1) <= 3:
-                    horario[op][d_rand] = TURNO_DIA
-                    turnos_bloque[op] += 1
+            while turnos_bloque[op] < 11:
+                # Buscamos huecos de 1 día que podamos convertir en 2, o días solos que no rompan reglas
+                for d_rev in bloque:
+                    if (d_rev % 7) >= d_semana or horario[op][d_rev] != DESCANSO: continue
+                    # Evitar N->D y Max 3
+                    if d_rev > bloque_idx and horario[op][d_rev-1] == TURNO_NOCHE: continue
+                    
+                    # Ver racha antes y después
+                    r_ant = (1 if d_rev > bloque_idx and horario[op][d_rev-1] != DESCANSO else 0)
+                    r_des = (1 if d_rev < bloque[-1] and horario[op][d_rev+1] != DESCANSO else 0)
+                    
+                    if (r_ant + r_des + 1) <= 3:
+                        horario[op][d_rev] = TURNO_DIA
+                        turnos_bloque[op] += 1
+                        break
+                else: break
+
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # 5. EJECUCIÓN
 if st.button(f"🚀 Generar Programación para {cargo}"):
-    total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
-    op_base = math.ceil(total_turnos_ciclo / 11)
-    op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
+    total_turnos = (demanda_dia + demanda_noche) * dias_cubrir * 3
+    op_final = math.ceil((total_turnos / 11) * factor_cobertura / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df"] = generar_programacion_bloques(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
 # 6. RENDERIZADO
@@ -124,27 +156,9 @@ if "df" in st.session_state:
     stats = []
     for op in df.index:
         fila = df.loc[op]
-        total_d = (fila == TURNO_DIA).sum()
-        total_n = (fila == TURNO_NOCHE).sum()
-        c1_turnos = sum(1 for x in fila[:21] if x != DESCANSO)
-        c2_turnos = sum(1 for x in fila[21:] if x != DESCANSO)
-        
-        def get_seq(data):
-            w1 = sum(1 for x in data[0:7] if x != DESCANSO)
-            w2 = sum(1 for x in data[7:14] if x != DESCANSO)
-            w3 = sum(1 for x in data[14:21] if x != DESCANSO)
-            return f"{w1}-{w2}-{w3}"
-
-        stats.append({
-            "Operador": op,
-            "Turnos Día": total_d,
-            "Turnos Noche": total_n,
-            "Horas S1-S3": c1_turnos * horas_turno,
-            "Secuencia S1-S3": get_seq(fila[:21]),
-            "Horas S4-S6": c2_turnos * horas_turno,
-            "Secuencia S4-S6": get_seq(fila[21:]),
-            "Estado": "✅ 44h OK" if c1_turnos == 11 and c2_turnos == 11 else "❌ Revisar"
-        })
+        td, tn = (fila == TURNO_DIA).sum(), (fila == TURNO_NOCHE).sum()
+        c1, c2 = sum(1 for x in fila[:21] if x != DESCANSO), sum(1 for x in fila[21:] if x != DESCANSO)
+        stats.append({"Operador": op, "T. Día": td, "T. Noche": tn, "Horas S1-S3": c1*12, "Horas S4-S6": c2*12, "Estado": "✅ 44h OK" if c1==11 and c2==11 else "❌ Revisar"})
     df_stats = pd.DataFrame(stats).set_index("Operador")
     st.dataframe(df_stats, use_container_width=True)
 
@@ -156,29 +170,14 @@ if "df" in st.session_state:
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # --- EXPORTACIÓN A EXCEL MEJORADA SEGÚN IMAGEN 2 ---
+    # EXPORTACIÓN EXCEL IMAGEN 2
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
-    
-    # Preparar DF para exportación: El nombre del índice será el valor de la celda A1
     df_excel = df.copy()
     df_excel.index.name = cargo 
-
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Hoja 1: Programación (Empieza en A1 con el nombre del cargo como cabecera del índice)
         df_excel.style.map(style_func).to_excel(writer, sheet_name="Programación")
-        
-        # Hoja 2: Balance Detallado
-        df_stats_excel = df_stats.copy()
-        df_stats_excel.insert(0, 'Cargo', cargo) # Reinsertamos columna cargo para el balance
-        df_stats_excel.to_excel(writer, sheet_name="Balance")
-        
-        # Hoja 3: Cobertura
-        pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
+        df_stats.to_excel(writer, sheet_name="Balance")
+        df_check.to_excel(writer, sheet_name="Cobertura")
     
-    st.download_button(
-        label=f"⬇️ Descargar Programación {cargo} (Excel)",
-        data=output.getvalue(),
-        file_name=f"Programacion_{cargo}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button(label=f"⬇️ Descargar Programación {cargo}", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
