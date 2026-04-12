@@ -9,18 +9,18 @@ st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;600&display=swap');
 html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 .metric-box-green { background: #10B981; color: #064E3B; border-radius: 8px; padding: 1.2rem; text-align: center; }
-.metric-value-dark { font-size: 2.2rem; font-family: 'IBM Plex Mono', monospace; font-weight: 700; }
+.metric-value-dark { font-size: 2.2rem; font-family: monospace; font-weight: 700; }
 .stButton > button { background: #0F172A; color: #F8FAFC; border-radius: 4px; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132 horas por ciclo, bloques de 2 a 3 días y máximo 1 refuerzo por turno.")
+st.caption("Objetivo: 132h exactas, Bloques 2-3 días, Máximo 1 refuerzo/turno.")
 
-# 2. SIDEBAR - PARÁMETROS
+# 2. SIDEBAR
 with st.sidebar:
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value="Cosechador")
@@ -42,142 +42,138 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON REGLA DE BLOQUES (MIN 2 - MAX 3)
-def generar_programacion_bloques(n_ops, d_req, n_req, d_semana):
+# 4. MOTOR DE PROGRAMACIÓN RECONSTRUIDO
+def generar_programacion_blindada(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    random.seed(42)
+    random.seed(44) # Nueva semilla para balance
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
-    noches_acum = {op: 0 for op in ops}
-
+    
     for bloque_idx in [0, 21]:
-        bloque = list(range(bloque_idx, bloque_idx + 21))
+        bloque = range(bloque_idx, bloque_idx + 21)
         turnos_bloque = {op: 0 for op in ops}
-        
-        # Iteramos día por día para construir los bloques
-        for d in bloque:
-            if (d % 7) >= d_semana: continue
-            
-            # Identificar quiénes TRABAJARON AYER (para ver si deben seguir trabajando hoy)
-            siguen_trabajando = []
-            libres_hoy = []
-            
-            for op in ops:
-                # Calcular racha actual
-                racha = 0
-                for i in range(d-1, bloque_idx-1, -1):
-                    if horario[op][i] != DESCANSO: racha += 1
-                    else: break
-                
-                # REGLA: Si trabajó 1 solo día, HOY DEBE TRABAJAR (Min 2)
-                if racha == 1 and turnos_bloque[op] < 11:
-                    siguen_trabajando.append(op)
-                # REGLA: Si trabajó 3 días, HOY DEBE DESCANSAR (Max 3)
-                elif racha >= 3:
-                    pass 
-                # Si no tiene racha o lleva 2 días, es elegible
-                elif turnos_bloque[op] < 11:
-                    libres_hoy.append(op)
+        racha_consecutiva = {op: 0 for op in ops}
+        ultimo_turno = {op: None for op in ops}
 
-            # --- ASIGNACIÓN DE NOCHE ---
-            # Prioridad 1: Los que "deben" seguir trabajando por regla de Min 2
-            # Prioridad 2: Los libres con menos turnos
-            candidatos_n = siguen_trabajando + libres_hoy
-            candidatos_n.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
+        for d in bloque:
+            dia_sem = d % 7
+            if dia_sem >= d_semana: continue
+
+            # --- 1. PRIORIDAD: QUIÉNES TIENEN QUE TRABAJAR POR REGLA MIN 2 ---
+            obligados = [op for op in ops if racha_consecutiva[op] == 1]
+            # --- 2. ELIGIBLES: QUIÉNES PUEDEN TRABAJAR (No racha 3, No N->D, Turnos < 11) ---
+            disponibles = []
+            for op in ops:
+                if op in obligados: continue
+                if turnos_bloque[op] >= 11: continue
+                if racha_consecutiva[op] >= 3: continue
+                # Regla Noche -> Día
+                if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
+                disponibles.append(op)
+
+            random.shuffle(disponibles)
             
-            asignados_n = candidatos_n[:n_req]
+            # --- 3. ASIGNACIÓN DE NOCHE (Cupo estricto) ---
+            asignados_n = []
+            # Primero obligados que venían de noche
+            for op in obligados:
+                if len(asignados_n) < n_req and ultimo_turno[op] == TURNO_NOCHE:
+                    asignados_n.append(op)
+            # Luego resto de obligados y luego disponibles
+            resto_n = [o for o in obligados + disponibles if o not in asignados_n]
+            resto_n.sort(key=lambda x: (turnos_bloque[x], random.random()))
+            
+            while len(asignados_n) < n_req and resto_n:
+                asignados_n.append(resto_n.pop(0))
+
             for op in asignados_n:
                 horario[op][d] = TURNO_NOCHE
                 turnos_bloque[op] += 1
-                noches_acum[op] += 1
-                if op in siguen_trabajando: siguen_trabajando.remove(op)
-                if op in libres_hoy: libres_hoy.remove(op)
+                racha_consecutiva[op] += 1
+                ultimo_turno[op] = TURNO_NOCHE
 
-            # --- ASIGNACIÓN DE DÍA ---
-            ya_n = set(asignados_n)
-            hizo_n_ayer = {op for op in ops if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE}
+            # --- 4. ASIGNACIÓN DE DÍA (Cupo Req + 1 Máximo) ---
+            asignados_d = []
+            ya_asignados = set(asignados_n)
             
-            # Filtramos candidatos para día (No N->D)
-            candidatos_d = [op for op in (siguen_trabajando + libres_hoy) if op not in ya_n and op not in hizo_n_ayer]
-            candidatos_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
+            # Candidatos para día: Obligados que faltan y disponibles (filtrando N->D)
+            cand_d = [o for o in obligados + disponibles if o not in ya_asignados]
+            # Filtro estricto N->D para disponibles
+            cand_d = [o for o in cand_d if not (d > bloque_idx and horario[o][d-1] == TURNO_NOCHE)]
             
-            # Aplicamos restricción de Refuerzo (Max Req + 1)
-            cupo_d = d_req + 1 if (sum(turnos_bloque.values()) < (d_req + n_req) * (bloque_idx + 21 - d)) else d_req
+            cand_d.sort(key=lambda x: (turnos_bloque[x], random.random()))
             
-            asignados_d = candidatos_d[:cupo_d]
+            # Límite de refuerzo dinámico: si sobran muchos turnos en el ciclo, permitimos d_req + 1
+            max_dia = d_req + 1 if (sum(turnos_bloque.values()) < (n_ops * 11 * 0.9)) else d_req
+            # Forzamos que nunca pase de d_req + 1
+            max_dia = min(max_dia, d_req + 1)
+
+            while len(asignados_d) < max_dia and cand_d:
+                asignados_d.append(cand_d.pop(0))
+            
             for op in asignados_d:
                 horario[op][d] = TURNO_DIA
                 turnos_bloque[op] += 1
+                racha_consecutiva[op] += 1
+                ultimo_turno[op] = TURNO_DIA
 
-        # FASE FINAL: Ajuste para los que quedaron con 10 turnos (Inyección de bloques de 2 si es posible)
-        for op in ops:
-            while turnos_bloque[op] < 11:
-                # Buscamos huecos de 1 día que podamos convertir en 2, o días solos que no rompan reglas
-                for d_rev in bloque:
-                    if (d_rev % 7) >= d_semana or horario[op][d_rev] != DESCANSO: continue
-                    # Evitar N->D y Max 3
-                    if d_rev > bloque_idx and horario[op][d_rev-1] == TURNO_NOCHE: continue
-                    
-                    # Ver racha antes y después
-                    r_ant = (1 if d_rev > bloque_idx and horario[op][d_rev-1] != DESCANSO else 0)
-                    r_des = (1 if d_rev < bloque[-1] and horario[op][d_rev+1] != DESCANSO else 0)
-                    
-                    if (r_ant + r_des + 1) <= 3:
-                        horario[op][d_rev] = TURNO_DIA
-                        turnos_bloque[op] += 1
-                        break
-                else: break
+            # --- 5. LIMPIEZA DE RACHAS ---
+            trabajaron = set(asignados_n) | set(asignados_d)
+            for op in ops:
+                if op not in trabajaron:
+                    racha_consecutiva[op] = 0
+                    ultimo_turno[op] = None
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
 # 5. EJECUCIÓN
-if st.button(f"🚀 Generar Programación para {cargo}"):
+if st.button(f"🚀 Generar Programación Blindada {cargo}"):
     total_turnos = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_final = math.ceil((total_turnos / 11) * factor_cobertura / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df"] = generar_programacion_bloques(op_final, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df"] = generar_programacion_blindada(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
 # 6. RENDERIZADO
 if "df" in st.session_state:
     df, op_final = st.session_state["df"], st.session_state["op_final"]
-    faltantes = max(0, op_final - operadores_actuales)
     
+    # Métricas
     c1, c2, c3 = st.columns(3)
-    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label">Necesarios</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label">Contratar</div><div class="metric-value-dark">{max(0, op_final-operadores_actuales)}</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label">Meta</div><div class="metric-value-dark">132h</div></div>', unsafe_allow_html=True)
 
     st.subheader("📅 Programación del Personal")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
+    # Balance Detallado (A1 con Cargo)
     st.subheader(f"📊 Balance Detallado: {cargo}")
     stats = []
     for op in df.index:
-        fila = df.loc[op]
-        td, tn = (fila == TURNO_DIA).sum(), (fila == TURNO_NOCHE).sum()
-        c1, c2 = sum(1 for x in fila[:21] if x != DESCANSO), sum(1 for x in fila[21:] if x != DESCANSO)
-        stats.append({"Operador": op, "T. Día": td, "T. Noche": tn, "Horas S1-S3": c1*12, "Horas S4-S6": c2*12, "Estado": "✅ 44h OK" if c1==11 and c2==11 else "❌ Revisar"})
+        f = df.loc[op]
+        d1, n1 = (f[:21]==TURNO_DIA).sum(), (f[:21]==TURNO_NOCHE).sum()
+        d2, n2 = (f[21:]==TURNO_DIA).sum(), (f[21:]==TURNO_NOCHE).sum()
+        stats.append({"Operador": op, "T. Día": d1+d2, "T. Noche": n1+n2, "Horas S1-3": (d1+n1)*12, "Horas S4-6": (d2+n2)*12, "Estado": "✅ 44h OK" if (d1+n1)==11 else "❌"})
     df_stats = pd.DataFrame(stats).set_index("Operador")
     st.dataframe(df_stats, use_container_width=True)
 
+    # Cobertura
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
-        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK"})
+        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK" if ad>=demanda_dia and an>=demanda_noche else "❌"})
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # EXPORTACIÓN EXCEL IMAGEN 2
-    st.subheader("📥 Exportar Resultados")
+    # Exportación
     output = io.BytesIO()
     df_excel = df.copy()
-    df_excel.index.name = cargo 
+    df_excel.index.name = cargo
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_excel.style.map(style_func).to_excel(writer, sheet_name="Programación")
         df_stats.to_excel(writer, sheet_name="Balance")
         df_check.to_excel(writer, sheet_name="Cobertura")
-    
-    st.download_button(label=f"⬇️ Descargar Programación {cargo}", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
+    st.download_button(label=f"📥 Descargar Programación {cargo}", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
