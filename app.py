@@ -42,7 +42,7 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON REGLA MIN 2
+# 4. MOTOR DE PROGRAMACIÓN CON REGLA MIN 2 Y BLOQUEO DE 11 TURNOS
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
@@ -56,17 +56,15 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
         for d in bloque:
             if (d % 7) >= d_semana: continue
             
-            # --- LÓGICA MIN 2: Identificar quién trabajó ayer por primera vez ---
+            # LÓGICA MIN 2: Identificar quién trabajó ayer por primera vez
             obligados = []
             for op in ops:
                 if d > bloque_idx and horario[op][d-1] != DESCANSO:
-                    # Si ayer trabajó y antes de ayer descansó, hoy es su 2do día obligatorio
                     if d-1 == bloque_idx or horario[op][d-2] == DESCANSO:
                         if turnos_bloque[op] < 11:
                             obligados.append(op)
 
             aptos = [op for op in ops if turnos_bloque[op] < 11]
-            # Priorizar obligados en la lista de aptos
             aptos.sort(key=lambda x: (x not in obligados, turnos_bloque[x], noches_acum[x], random.random()))
             
             # Asignar Noche
@@ -80,7 +78,6 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             ya_n = set(asignados_n)
             hizo_n_ayer = {op for op in ops if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE}
             aptos_d = [op for op in aptos if op not in ya_n and op not in hizo_n_ayer]
-            # Priorizar obligados también en día
             aptos_d.sort(key=lambda x: (x not in obligados, turnos_bloque[x], -noches_acum[x], random.random()))
             
             asignados_d = aptos_d[:d_req]
@@ -88,29 +85,23 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 horario[op][d] = TURNO_DIA
                 turnos_bloque[op] += 1
 
-        # FASE 2: INYECCIÓN DE REFUERZOS (BUSCANDO VECINOS PARA NO DEJAR DÍAS SOLOS)
+        # FASE 2: INYECCIÓN DE REFUERZOS (BUSCANDO VECINOS)
         for op in ops:
             intentos = 0
             while turnos_bloque[op] < 11 and intentos < 200:
                 intentos += 1
                 d_rand = random.choice(list(bloque))
-                
                 if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana: continue
                 
-                # Para evitar el "serrucho", solo inyectamos si el día tiene un vecino trabajando
-                # O si nos quedan más de 1 turno por asignar (para poder crear un bloque de 2 nuevo)
                 tiene_vecino = False
                 if d_rand > bloque_idx and horario[op][d_rand-1] != DESCANSO: tiene_vecino = True
                 if d_rand < bloque.stop-1 and horario[op][d_rand+1] != DESCANSO: tiene_vecino = True
-                
-                if not tiene_vecino and turnos_bloque[op] < 10: 
-                    continue # Preferimos buscar un día que esté al lado de otro
+                if not tiene_vecino and turnos_bloque[op] < 10: continue
                 
                 ocupacion_dia = sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA)
                 if ocupacion_dia >= d_req + 1: continue 
                 if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
                 
-                # Validar racha máxima de 3
                 racha = 0
                 for i in range(d_rand-1, bloque_idx-1, -1):
                     if horario[op][i] != DESCANSO: racha += 1
@@ -132,7 +123,7 @@ if st.button(f"🚀 Generar Programación para {cargo}"):
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, d_semana=dias_cubrir)
+    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
 # 6. RENDERIZADO
@@ -149,15 +140,29 @@ if "df" in st.session_state:
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
+    # --- BALANCE DETALLADO CON SECUENCIAS ---
     st.subheader(f"📊 Balance Detallado: {cargo}")
     stats = []
     for op in df.index:
         fila = df.loc[op]
         total_d, total_n = (fila == TURNO_DIA).sum(), (fila == TURNO_NOCHE).sum()
         c1_t, c2_t = sum(1 for x in fila[:21] if x != DESCANSO), sum(1 for x in fila[21:] if x != DESCANSO)
+        
+        # Función para calcular secuencia (4-4-3)
+        def get_seq(data):
+            w1 = sum(1 for x in data[0:7] if x != DESCANSO)
+            w2 = sum(1 for x in data[7:14] if x != DESCANSO)
+            w3 = sum(1 for x in data[14:21] if x != DESCANSO)
+            return f"{w1}-{w2}-{w3}"
+
         stats.append({
-            "Operador": op, "T. Día": total_d, "T. Noche": total_n,
-            "Horas S1-S3": c1_t * horas_turno, "Horas S4-S6": c2_t * horas_turno,
+            "Operador": op, 
+            "T. Día": total_d, 
+            "T. Noche": total_n,
+            "Horas S1-S3": c1_t * horas_turno, 
+            "Secuencia S1-S3": get_seq(fila[:21]),
+            "Horas S4-S6": c2_t * horas_turno,
+            "Secuencia S4-S6": get_seq(fila[21:]),
             "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
         })
     df_stats = pd.DataFrame(stats).set_index("Operador")
@@ -171,7 +176,7 @@ if "df" in st.session_state:
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # EXCEL
+    # EXPORTACIÓN
     output = io.BytesIO()
     df_excel = df.copy()
     df_excel.index.name = cargo 
