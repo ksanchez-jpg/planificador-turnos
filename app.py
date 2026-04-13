@@ -20,6 +20,10 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
 st.caption("Objetivo: 132 horas por ciclo, máximo 1 refuerzo por turno con programación inteligente.")
 
+# Inicializar semilla en el estado de la sesión si no existe
+if 'seed' not in st.session_state:
+    st.session_state['seed'] = 42
+
 # 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
     st.header("👤 Parámetros")
@@ -45,7 +49,8 @@ NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", 
 # 4. MOTOR DE PROGRAMACIÓN
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    random.seed(42)
+    # Usamos la semilla del estado de sesión para permitir variaciones
+    random.seed(st.session_state['seed'])
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
 
@@ -96,8 +101,11 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                     turnos_bloque[op] += 1
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
-# 5. EJECUCIÓN
-if st.button(f"🚀 Generar Programación para {cargo}"):
+# 5. EJECUCIÓN (Función auxiliar para procesar lógica)
+def procesar_generacion(semilla_manual=None):
+    if semilla_manual is not None:
+        st.session_state['seed'] = semilla_manual
+    
     total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_base = math.ceil(total_turnos_ciclo / 11)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
@@ -105,6 +113,17 @@ if st.button(f"🚀 Generar Programación para {cargo}"):
     
     st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
+
+# Botones de Acción
+col1, col2 = st.columns(2)
+with col1:
+    if st.button(f"🚀 Generar Programación (Base)"):
+        procesar_generacion(42) # Resetea a la versión inicial
+
+with col2:
+    if st.button("🔄 Generar Otra Versión Diferente"):
+        # Genera una semilla aleatoria para obtener un resultado distinto
+        procesar_generacion(random.randint(1, 100000))
 
 # 6. RENDERIZADO
 if "df" in st.session_state:
@@ -156,24 +175,17 @@ if "df" in st.session_state:
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
-    # --- EXPORTACIÓN A EXCEL MEJORADA SEGÚN IMAGEN 2 ---
+    # --- EXPORTACIÓN A EXCEL ---
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
-    
-    # Preparar DF para exportación: El nombre del índice será el valor de la celda A1
     df_excel = df.copy()
     df_excel.index.name = cargo 
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Hoja 1: Programación (Empieza en A1 con el nombre del cargo como cabecera del índice)
         df_excel.style.map(style_func).to_excel(writer, sheet_name="Programación")
-        
-        # Hoja 2: Balance Detallado
         df_stats_excel = df_stats.copy()
-        df_stats_excel.insert(0, 'Cargo', cargo) # Reinsertamos columna cargo para el balance
+        df_stats_excel.insert(0, 'Cargo', cargo)
         df_stats_excel.to_excel(writer, sheet_name="Balance")
-        
-        # Hoja 3: Cobertura
         pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
     
     st.download_button(
