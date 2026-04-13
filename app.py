@@ -18,7 +18,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132h por ciclo, Mín 3 / Máx 5 días por semana, Máximo 1 refuerzo.")
+st.caption("Objetivo: 132h por ciclo, Mín 3 días/semana, bloques mín. 2 días y máx 1 refuerzo.")
 
 # 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
@@ -42,7 +42,7 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN (MAX 5 DÍAS / SEMANA)
+# 4. MOTOR DE PROGRAMACIÓN CORREGIDO
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(42)
@@ -54,17 +54,22 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
         turnos_totales = {op: 0 for op in ops}
         turnos_semanales = {op: [0, 0, 0] for op in ops} 
 
+        # --- FASE 1: ASIGNACIÓN BASE ---
         for d in bloque:
             if (d % 7) >= d_semana: continue
             semana_rel = (d - bloque_idx) // 7
             
-            # Aptos: Máximo 5 por semana, tope 11 por ciclo
+            # Lógica bloques mín 2: Identificar obligados
+            obligados = []
+            for op in ops:
+                if d > bloque_idx and horario[op][d-1] != DESCANSO:
+                    if d-1 == bloque_idx or horario[op][d-2] == DESCANSO:
+                        if turnos_totales[op] < 11: obligados.append(op)
+
             aptos = [op for op in ops if turnos_totales[op] < 11 and turnos_semanales[op][semana_rel] < 5]
-            # No 3 días seguidos y no N->D
-            aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO or (d > 1 and horario[op][d-2] == DESCANSO)]
+            aptos.sort(key=lambda x: (x not in obligados, turnos_totales[x], noches_acum[x], random.random()))
             
-            # Asignación Noche
-            aptos.sort(key=lambda x: (turnos_totales[x], turnos_semanales[x][semana_rel], noches_acum[x], random.random()))
+            # Asignar Noche
             asignados_n = aptos[:n_req]
             for op in asignados_n:
                 horario[op][d] = TURNO_NOCHE
@@ -72,11 +77,11 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 turnos_semanales[op][semana_rel] += 1
                 noches_acum[op] += 1
             
-            # Asignación Día
+            # Asignar Día
             ya_n = set(asignados_n)
             hizo_n_ayer = {op for op in ops if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE}
             aptos_d = [op for op in aptos if op not in ya_n and op not in hizo_n_ayer]
-            aptos_d.sort(key=lambda x: (turnos_totales[x], turnos_semanales[x][semana_rel], -noches_acum[x], random.random()))
+            aptos_d.sort(key=lambda x: (x not in obligados, turnos_totales[x], -noches_acum[x], random.random()))
             
             asignados_d = aptos_d[:d_req]
             for op in asignados_d:
@@ -84,20 +89,48 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 turnos_totales[op] += 1
                 turnos_semanales[op][semana_rel] += 1
 
-        # Ajuste final: Mínimo 3 días por semana
+        # --- FASE 2: AJUSTE ESTRICTO MÍNIMO 3 DÍAS / SEMANA ---
         for op in ops:
             for s in range(3):
+                # Mientras la semana tenga menos de 3 y el total menos de 11
                 while turnos_semanales[op][s] < 3 and turnos_totales[op] < 11:
-                    d_rand = random.choice(range(bloque_idx + s*7, bloque_idx + (s+1)*7))
-                    if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana: continue
+                    dias_semana = list(range(bloque_idx + s*7, bloque_idx + (s+1)*7))
+                    random.shuffle(dias_semana)
                     
-                    ocupacion_dia = sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA)
-                    if ocupacion_dia >= d_req + 1: continue 
-                    if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
+                    exito_ajuste = False
+                    for d_aj in dias_semana:
+                        if horario[op][d_aj] != DESCANSO or (d_aj % 7) >= d_semana: continue
+                        
+                        # Respetar N->D y Max Refuerzo
+                        ocupacion_dia = sum(1 for o in ops if horario[o][d_aj] == TURNO_DIA)
+                        if ocupacion_dia >= d_req + 1: continue 
+                        if d_aj > bloque_idx and horario[op][d_aj-1] == TURNO_NOCHE: continue
+                        
+                        horario[op][d_aj] = TURNO_DIA
+                        turnos_totales[op] += 1
+                        turnos_semanales[op][s] += 1
+                        exito_ajuste = True
+                        break
                     
-                    horario[op][d_rand] = TURNO_DIA
-                    turnos_totales[op] += 1
-                    turnos_semanales[op][s] += 1
+                    if not exito_ajuste: break # No hubo huecos válidos
+
+        # --- FASE 3: RELLENO FINAL HASTA 11 (Si faltan) ---
+        for op in ops:
+            intentos = 0
+            while turnos_totales[op] < 11 and intentos < 200:
+                intentos += 1
+                d_rand = random.choice(list(bloque))
+                s_rand = (d_rand - bloque_idx) // 7
+                
+                if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana or turnos_semanales[op][s_rand] >= 5: continue
+                
+                ocupacion_dia = sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA)
+                if ocupacion_dia >= d_req + 1: continue 
+                if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
+                
+                horario[op][d_rand] = TURNO_DIA
+                turnos_totales[op] += 1
+                turnos_semanales[op][s_rand] += 1
                     
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
