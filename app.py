@@ -18,7 +18,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132 horas por ciclo, prioridad a bloques de 2 días para descansos prolongados.")
+st.caption("Objetivo: 132 horas por ciclo, máximo 1 refuerzo por turno con programación inteligente.")
 
 # Inicializar semilla en el estado de la sesión si no existe
 if 'seed' not in st.session_state:
@@ -49,6 +49,7 @@ NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", 
 # 4. MOTOR DE PROGRAMACIÓN
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
+    # Usamos la semilla del estado de sesión para permitir variaciones
     random.seed(st.session_state['seed'])
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
@@ -56,22 +57,13 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
         turnos_bloque = {op: 0 for op in ops}
-        racha_actual = {op: 0 for op in ops} # Seguimiento de días seguidos
         
         for d in bloque:
             if (d % 7) >= d_semana: continue
-            
-            # Aptos: Tienen menos de 11 turnos y no han trabajado más de 2 días seguidos
             aptos = [op for op in ops if turnos_bloque[op] < 11]
-            aptos = [op for op in aptos if d == bloque_idx or horario[op][d-1] == DESCANSO or (d > bloque_idx + 1 and horario[op][d-2] == DESCANSO)]
+            aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO or (d > 1 and horario[op][d-2] == DESCANSO)]
             
-            # Prioridad: Aquellos que trabajaron ayer deben completar su bloque de 2 hoy
-            # Orden de sorteo: (Prioridad racha, Equidad de turnos, Noches, Aleatoriedad)
-            def sort_key_noche(op):
-                trabajo_ayer = 0 if (d > bloque_idx and horario[op][d-1] != DESCANSO) else 1
-                return (trabajo_ayer, turnos_bloque[op], noches_acum[op], random.random())
-
-            aptos.sort(key=sort_key_noche)
+            aptos.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
             asignados_n = aptos[:n_req]
             for op in asignados_n:
                 horario[op][d] = TURNO_NOCHE
@@ -81,32 +73,22 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             ya_n = set(asignados_n)
             hizo_n_ayer = {op for op in ops if d > bloque_idx and horario[op][d-1] == TURNO_NOCHE}
             aptos_d = [op for op in aptos if op not in ya_n and op not in hizo_n_ayer]
-            
-            def sort_key_dia(op):
-                trabajo_ayer = 0 if (d > bloque_idx and horario[op][d-1] != DESCANSO) else 1
-                return (trabajo_ayer, turnos_bloque[op], -noches_acum[op], random.random())
-
-            aptos_d.sort(key=sort_key_dia)
+            aptos_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
             
             asignados_d = aptos_d[:d_req]
             for op in asignados_d:
                 horario[op][d] = TURNO_DIA
                 turnos_bloque[op] += 1
 
-        # Llenado de turnos faltantes priorizando crear bloques de 2
         for op in ops:
             intentos = 0
-            while turnos_bloque[op] < 11 and intentos < 200:
+            while turnos_bloque[op] < 11 and intentos < 100:
                 intentos += 1
                 d_rand = random.choice(list(bloque))
                 if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana: continue
-                
-                # Reglas básicas: Cobertura, Noche->Día
                 ocupacion_dia = sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA)
                 if ocupacion_dia >= d_req + 1: continue 
                 if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
-                
-                # Evaluar racha si se inserta este turno
                 racha = 0
                 for i in range(d_rand-1, bloque_idx-1, -1):
                     if horario[op][i] != DESCANSO: racha += 1
@@ -114,15 +96,12 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 for i in range(d_rand+1, bloque.stop):
                     if horario[op][i] != DESCANSO: racha += 1
                     else: break
-                
-                # Favorecer bloques de exactamente 2 días
-                if (racha + 1) <= 2:
+                if (racha + 1) <= 3:
                     horario[op][d_rand] = TURNO_DIA
                     turnos_bloque[op] += 1
-                    
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
-# 5. EJECUCIÓN
+# 5. EJECUCIÓN (Función auxiliar para procesar lógica)
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None:
         st.session_state['seed'] = semilla_manual
@@ -139,10 +118,11 @@ def procesar_generacion(semilla_manual=None):
 col1, col2 = st.columns(2)
 with col1:
     if st.button(f"🚀 Generar Programación (Base)"):
-        procesar_generacion(42)
+        procesar_generacion(42) # Resetea a la versión inicial
 
 with col2:
     if st.button("🔄 Generar Otra Versión Diferente"):
+        # Genera una semilla aleatoria para obtener un resultado distinto
         procesar_generacion(random.randint(1, 100000))
 
 # 6. RENDERIZADO
@@ -155,8 +135,8 @@ if "df" in st.session_state:
     with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación del Personal (Bloques de 2 días)")
-    style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold; border: 1px solid #ddd"
+    st.subheader("📅 Programación del Personal")
+    style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
     st.subheader(f"📊 Balance Detallado: {cargo}")
@@ -195,6 +175,7 @@ if "df" in st.session_state:
     df_check = pd.DataFrame(check).set_index("Día")
     st.dataframe(df_check.T, use_container_width=True)
 
+    # --- EXPORTACIÓN A EXCEL ---
     st.subheader("📥 Exportar Resultados")
     output = io.BytesIO()
     df_excel = df.copy()
