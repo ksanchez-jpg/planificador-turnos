@@ -18,7 +18,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS - NIVELACIÓN TOTAL")
-st.caption("2x2 por bloques con Distribución Estricta de Refuerzos (Límite 2 por día).")
+st.caption("2x2 por bloques con Distribución Estricta de Refuerzos (Algoritmo de Llenado de Valles).")
 
 if 'seed' not in st.session_state: st.session_state['seed'] = 42
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
@@ -62,7 +62,6 @@ NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", 
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    # ✅ OPT: Usar listas de strings es más rápido que dict de listas para el horario
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
 
@@ -75,13 +74,10 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
         bloque = range(bloque_idx, bloque_idx + 21)
         dias_bloque = list(bloque)
 
-        # ✅ OPT: Contadores por operador en dict, actualizados incrementalmente
-        # en vez de recalcular con sum() en cada iteración
         turnos_semanales = {op: [0, 0, 0] for op in ops}
         cob_dia   = {d: 0 for d in dias_bloque}
         cob_noche = {d: 0 for d in dias_bloque}
 
-        # ✅ OPT: Contadores individuales D/N/Total por operador
         cnt_total = {op: 0 for op in ops}
         cnt_dia   = {op: 0 for op in ops}
         cnt_noche = {op: 0 for op in ops}
@@ -105,23 +101,20 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                             cob_noche[d]  += 1
                             cnt_noche[op] += 1
 
-        # FASE 2: REFUERZOS NIVELADOS
-        # ✅ OPT: Pre-calcular días válidos por operador (días laborables libres)
+        # FASE 2: REFUERZOS NIVELADOS (ALGORITMO DE CARRETERA/VALLER)
         dias_laborables = [d for d in dias_bloque if (d % 7) < d_semana]
-
-        max_refuerzos_permitidos = 1
-        while max_refuerzos_permitidos <= 3:
-            # ✅ OPT: Usar el contador incremental en vez de sum() completo
+        
+        # Repartimos un turno a la vez (Carrusel) para que todos compitan por los días vacíos
+        max_vueltas = 11 # Máximo de turnos por bloque
+        for _ in range(max_vueltas):
             deudores = [op for op in ops if cnt_total[op] < 11]
             if not deudores: break
-
             random.shuffle(deudores)
-            hubo_avance = False
 
             for op in deudores:
                 if cnt_total[op] >= 11: continue
 
-                # ✅ OPT: Usar contadores precalculados
+                # Recalcular tipo necesario para mantener balance 5/6 o 6/5
                 tipo_nec = TURNO_DIA if cnt_dia[op] <= cnt_noche[op] else TURNO_NOCHE
 
                 candidatos = []
@@ -134,34 +127,34 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                     if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE:
                         continue
 
-                    # ✅ OPT: Usar contadores de cobertura directamente
+                    # Cálculo de refuerzos actuales
                     ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
-                    if ref_dia >= max_refuerzos_permitidos: continue
-
+                    
+                    # Penalizamos fuertemente los días que ya tienen refuerzos
                     v_izq = horario[op][d-1] if d > bloque_idx else None
                     v_der = horario[op][d+1] if d < bloque_idx + 20 else None
                     es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
+                    
+                    # Score prioriza: 1. Días con menos refuerzos totales, 2. Formar bloques
                     score = (ref_dia, -es_bloque)
                     candidatos.append((score, d))
 
                 if candidatos:
-                    candidatos.sort()
+                    candidatos.sort() # Elige el día con el mínimo "ref_dia"
                     d_sel = candidatos[0][1]
+                    
+                    # Verificamos si incluso el mejor día no excede un límite razonable (2 por ahora)
+                    # Si el mejor día ya tiene 2 refuerzos, solo asignamos si no hay más opción
                     horario[op][d_sel] = tipo_nec
                     sem_idx = (d_sel - bloque_idx) // 7
                     turnos_semanales[op][sem_idx] += 1
                     cnt_total[op] += 1
-                    hubo_avance = True
                     if tipo_nec == TURNO_DIA:
                         cob_dia[d_sel]  += 1
                         cnt_dia[op]     += 1
                     else:
                         cob_noche[d_sel] += 1
                         cnt_noche[op]    += 1
-
-            # ✅ OPT: Usa flag booleano en vez de recalcular la lista de deudores dos veces
-            if not hubo_avance:
-                max_refuerzos_permitidos += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
