@@ -58,14 +58,18 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN
+# 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
+# ✅ OPTIMIZACIÓN: @st.cache_data guarda el resultado en memoria.
+# Si los parámetros no cambian, devuelve el resultado guardado instantáneamente
+# sin volver a ejecutar el algoritmo. El seed ahora es parámetro para que
+# el cache lo detecte correctamente cuando cambie.
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
 
-    random.seed(seed)
+    random.seed(seed)  # ✅ Usa el seed recibido como parámetro
     random.shuffle(ops)
     grupos = [ops[i::4] for i in range(4)]
     offsets = [0, 2, 4, 6]
@@ -76,6 +80,7 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
         cob_dia = {d: 0 for d in bloque}
         cob_noche = {d: 0 for d in bloque}
 
+        # FASE 1: ASIGNACIÓN BASE
         for g_idx, grupo_ops in enumerate(grupos):
             off = offsets[g_idx]
             for op in grupo_ops:
@@ -88,14 +93,17 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                         else: cob_noche[d] += 1
                         turnos_semanales[op][(d - bloque_idx) // 7] += 1
 
+        # FASE 2: REFUERZOS NIVELADOS (Máximo 2 por día)
         max_refuerzos_permitidos = 1
         while max_refuerzos_permitidos <= 3:
             deudores = [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]
             if not deudores: break
+
             random.shuffle(deudores)
             for op in deudores:
                 conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
                 if conteo >= 11: continue
+
                 d_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
                 n_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
                 tipo_nec = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
@@ -124,6 +132,8 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
 
             if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
                 max_refuerzos_permitidos += 1
+            else:
+                pass
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -134,9 +144,11 @@ def procesar_generacion(semilla_manual=None):
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
+    # ✅ Ahora se pasa el seed como argumento explícito para que el cache funcione
     st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
+# BOTONES
 c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("🚀 Generar Programación"): procesar_generacion(42)
@@ -152,7 +164,7 @@ with c3:
             st.session_state['mapping'] = mapeo
             st.success("Personal asignado con nivelación estricta.")
 
-# 6. RENDERIZADO Y EXPORTACIÓN
+# 6. RENDERIZADO
 if "df" in st.session_state:
     df_base = st.session_state["df"]
     df_visual = df_base.copy()
@@ -169,7 +181,7 @@ if "df" in st.session_state:
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df_visual.style.map(style_f), use_container_width=True)
 
-    # 📊 PREPARAR TABLA DE BALANCE
+    st.subheader("📊 Balance Detallado")
     stats = []
     for idx in df_base.index:
         f = df_base.loc[idx]
@@ -182,50 +194,17 @@ if "df" in st.session_state:
             "Secuencia S4-6": f"{sum(1 for x in f[21:28] if x!=DESCANSO)}-{sum(1 for x in f[28:35] if x!=DESCANSO)}-{sum(1 for x in f[35:42] if x!=DESCANSO)}",
             "Estado": "✅ 44h OK"
         })
-    df_balance = pd.DataFrame(stats).set_index("Identidad")
-    st.subheader("📊 Balance Detallado")
-    st.dataframe(df_balance, use_container_width=True)
+    st.dataframe(pd.DataFrame(stats).set_index("Identidad"), use_container_width=True)
 
-    # ✅ PREPARAR TABLA DE COBERTURA
+    st.subheader("✅ Validación de Cobertura (Límite Estricto 2)")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df_base[dia] == TURNO_DIA).sum(), (df_base[dia] == TURNO_NOCHE).sum()
         refuerzos_total = (ad-demanda_dia)+(an-demanda_noche)
         check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": refuerzos_total, "Estado": "✅ OK" if refuerzos_total <= 2 else "⚠️"})
-    df_cobertura = pd.DataFrame(check).set_index("Día")
-    st.subheader("✅ Validación de Cobertura (Límite Estricto 2)")
-    st.dataframe(df_cobertura.T, use_container_width=True)
+    st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
-    # --- LÓGICA DE DESCARGA CON COLORES Y MULTI-HOJA ---
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
-        # 1. Hoja de Programación
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df_visual.to_excel(writer, sheet_name="Programación")
-        workbook = writer.book
-        worksheet = writer.sheets["Programación"]
-
-        # Formatos
-        fmt_dia = workbook.add_format({'bg_color': '#FFF3CD', 'font_weight': 'bold', 'border': 1})
-        fmt_noche = workbook.add_format({'bg_color': '#CCE5FF', 'font_weight': 'bold', 'border': 1})
-        
-        # Aplicar colores automáticos
-        rows, cols = df_visual.shape
-        worksheet.conditional_format(1, 1, rows, cols, {
-            'type': 'cell', 'criteria': '==', 'value': '"D"', 'format': fmt_dia
-        })
-        worksheet.conditional_format(1, 1, rows, cols, {
-            'type': 'cell', 'criteria': '==', 'value': '"N"', 'format': fmt_noche
-        })
-
-        # 2. Hoja de Balance
-        df_balance.to_excel(writer, sheet_name="Balance_Operadores")
-        
-        # 3. Hoja de Cobertura
-        df_cobertura.to_excel(writer, sheet_name="Validacion_Cobertura")
-
-    st.download_button(
-        label="⬇️ Descargar Excel Completo", 
-        data=out.getvalue(), 
-        file_name=f"Programacion_{cargo}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button(label="⬇️ Descargar Excel", data=out.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
