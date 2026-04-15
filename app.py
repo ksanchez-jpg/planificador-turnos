@@ -23,7 +23,7 @@ st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, máximo 4 días/semana y
 if 'seed' not in st.session_state:
     st.session_state['seed'] = 42
 
-# --- AJUSTE: LECTURA DE EXCEL ---
+# --- BLOQUE DE EXCEL (COSECHA.xlsx) ---
 fichas_cargadas = []
 cargo_sugerido = "Cosechador"
 conteo_sugerido = 20
@@ -37,14 +37,14 @@ with st.sidebar:
         lista_hojas = excel_data.sheet_names
         hoja_sel = st.selectbox("Escoger hoja cargo", lista_hojas)
         
-        # Leer columna A (Fichas), saltando la primera fila (rótulos)
+        # Leer columna A, fila 1 son rótulos (header=0 por defecto)
         df_excel = pd.read_excel(archivo_subido, sheet_name=hoja_sel)
         cargo_sugerido = hoja_sel
         if not df_excel.empty:
-            # Seleccionar columna 0 (A) y limpiar nulos
-            fichas_cargadas = df_excel.iloc[:, 0].dropna().astype(str).tolist()
+            # Captura columna A, quita vacíos y asegura que sean únicos para evitar el error KeyError
+            fichas_cargadas = df_excel.iloc[:, 0].dropna().unique().astype(str).tolist()
             conteo_sugerido = len(fichas_cargadas)
-            st.success(f"Cargadas {conteo_sugerido} fichas.")
+            st.success(f"Cargadas {conteo_sugerido} fichas únicas.")
 
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value=cargo_sugerido)
@@ -171,14 +171,14 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
 # 5. EJECUCIÓN
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None: st.session_state['seed'] = semilla_manual
-    total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
+    total_turnos_ciclo = (demanda_dia + demanda_noche) * d_semana_val * 3 if 'd_semana_val' in locals() else (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_base = math.ceil(total_turnos_ciclo / 11)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
-# BOTONES PRINCIPALES
+# BOTONES
 c_btn1, c_btn2, c_btn3 = st.columns(3)
 with c_btn1:
     if st.button("🚀 Generar Programación (Base)"): procesar_generacion(42)
@@ -187,26 +187,30 @@ with c_btn2:
 with c_btn3:
     if st.button("👤 Asignar Personal Real"):
         if "df" in st.session_state:
-            df_temp = st.session_state["df"].copy()
-            lista_op_nombres = list(df_temp.index)
-            fichas_shuffled = random.sample(fichas_cargadas, len(fichas_cargadas)) if fichas_cargadas else []
+            # Trabajamos sobre una copia limpia para evitar errores de Styler
+            df_actual = st.session_state["df"].copy()
+            indices_viejos = df_actual.index.tolist()
             
-            mapping = {}
-            for i, op_label in enumerate(lista_op_nombres):
-                if i < len(fichas_shuffled):
-                    mapping[op_label] = fichas_shuffled[i]
+            fichas_mezcladas = random.sample(fichas_cargadas, len(fichas_cargadas)) if fichas_cargadas else []
+            
+            nuevo_mapeo = {}
+            for i, idx_antiguo in enumerate(indices_viejos):
+                if i < len(fichas_mezcladas):
+                    nuevo_mapeo[idx_antiguo] = fichas_mezcladas[i]
                 else:
-                    mapping[op_label] = f"VACANTE {i - len(fichas_shuffled) + 1}"
+                    nuevo_mapeo[idx_antiguo] = f"VACANTE {i - len(fichas_mezcladas) + 1}"
             
-            st.session_state["df"] = df_temp.rename(index=mapping)
-            st.success("Personal asignado exitosamente sin cambiar la programación.")
+            # Reasignamos el DataFrame con el nuevo índice
+            df_actual.index = [nuevo_mapeo[x] for x in indices_viejos]
+            st.session_state["df"] = df_actual
+            st.success("Nombres actualizados correctamente.")
         else:
-            st.error("Primero debes generar la programación base.")
+            st.error("Primero genera una programación.")
 
 # 6. RENDERIZADO
 if "df" in st.session_state:
-    df, op_final = st.session_state["df"], st.session_state["op_final"]
-    faltantes = max(0, op_final - operadores_actuales)
+    df = st.session_state["df"]
+    op_final = st.session_state["op_final"]
     
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown(f'<div class="metric-box-green"><div>{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
@@ -214,6 +218,7 @@ if "df" in st.session_state:
     with c3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
     st.subheader("📅 Programación del Personal")
+    # style_func aplicado directamente a un DataFrame limpio
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
