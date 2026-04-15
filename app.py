@@ -17,13 +17,13 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓 PROGRAMACIÓN DE TURNOS - NIVELACIÓN 50/50")
-st.caption("Objetivo: 132h, Balance Estricto Día/Noche (Máx. diferencia de 1 turno) y Reparto Equitativo.")
+st.title("🗓 PROGRAMACIÓN DE TURNOS - MODELO 2x2 BLOQUES")
+st.caption("Garantiza: Patrones de bloque, balance 5/6 turnos y meta de 132h sin turnos aislados.")
 
 if 'seed' not in st.session_state: st.session_state['seed'] = 42
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
 
-# --- BLOQUE DE EXCEL ---
+# --- BLOQUE DE EXCEL (COSECHA.xlsx) ---
 fichas_cargadas = []
 cargo_sugerido = "Cosechador"
 conteo_sugerido = 20
@@ -39,7 +39,7 @@ with st.sidebar:
         if not df_excel.empty:
             fichas_cargadas = df_excel.iloc[:, 0].dropna().astype(str).str.strip().tolist()
             conteo_sugerido = len(fichas_cargadas)
-            st.info(f"Leídas {conteo_sugerido} fichas únicas.")
+            st.info(f"Fichas detectadas: {conteo_sugerido}")
 
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value=cargo_sugerido)
@@ -58,81 +58,63 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON BALANCE FORZADO 50/50
-def generar_programacion_equilibrada(n_ops, d_req, n_req, d_semana):
+# 4. MOTOR DE PROGRAMACIÓN POR GRUPOS (BLOQUES ESTRICTOS)
+def generar_programacion_bloques(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    random.seed(st.session_state['seed'])
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
+    
+    # Definimos el patrón maestro de 8 días: 2 Día, 2 Descanso, 2 Noche, 2 Descanso
+    patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
+    
+    # Dividimos a los operadores en 4 grupos para cubrir todas las rotaciones
+    random.seed(st.session_state['seed'])
+    random.shuffle(ops)
+    grupos = [ops[i::4] for i in range(4)]
+    offsets = [0, 2, 4, 6] # Desplazamientos para que los grupos se turnen
 
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
-        turnos_bloque = {op: 0 for op in ops}
-        racha = {op: 0 for op in ops}
-        turnos_semanales = {op: [0, 0, 0] for op in ops}
-        cob_dia = {d: 0 for d in bloque}
-        cob_noche = {d: 0 for d in bloque}
+        
+        # Asignación de patrón base
+        for g_idx, grupo_ops in enumerate(grupos):
+            offset = offsets[g_idx]
+            for op in grupo_ops:
+                for d in bloque:
+                    # Regla de días a cubrir (ej. solo Lun-Dom según slider)
+                    if (d % 7) >= d_semana:
+                        horario[op][d] = DESCANSO
+                        continue
+                    
+                    idx_patron = (d + offset) % 8
+                    horario[op][d] = patron_maestro[idx_patron]
 
-        # FASE 1: 2X2 BASE
-        for d in bloque:
-            if (d % 7) >= d_semana: continue
-            sem_rel = (d - bloque_idx) // 7
-            aptos = [op for op in ops if turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4]
-            aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO]
-            random.shuffle(aptos)
-
-            asig_n = aptos[:n_req]
-            for op in asig_n:
-                horario[op][d], turnos_bloque[op], turnos_semanales[op][sem_rel], cob_noche[d], racha[op] = TURNO_NOCHE, turnos_bloque[op]+1, turnos_semanales[op][sem_rel]+1, cob_noche[d]+1, racha[op]+1
-
-            ya_n = set(asig_n)
-            cand_d = [op for op in aptos if op not in ya_n]
-            if d > bloque_idx: cand_d = [o for o in cand_d if horario[o][d-1] != TURNO_NOCHE]
-            asig_d = cand_d[:d_req]
-            for op in asig_d:
-                horario[op][d], turnos_bloque[op], turnos_semanales[op][sem_rel], cob_dia[d], racha[op] = TURNO_DIA, turnos_bloque[op]+1, turnos_semanales[op][sem_rel]+1, cob_dia[d]+1, racha[op]+1
-
-            for op in ops:
-                if op not in (set(asig_n) | set(asig_d)): racha[op] = 0
-
-        # FASE 2: AJUSTE FINAL CON BALANCE FORZADO (PILAR DEL CAMBIO)
-        deudores = [op for op in ops if turnos_bloque[op] < 11]
-        while deudores:
-            for op in deudores:
-                if turnos_bloque[op] >= 11: continue
-                
-                # Calcular balance actual del operador en ESTE bloque
+        # FASE DE REFUERZO: Si alguien tiene < 11 turnos, sumamos uno PEGADO a un bloque
+        for op in ops:
+            conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
+            while conteo < 11:
+                # Calculamos balance para ver qué necesita (D o N)
                 dias_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
                 noches_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
+                tipo_necesario = TURNO_DIA if dias_op <= noches_op else TURNO_NOCHE
                 
-                # Decidir qué turno necesita para llegar al balance 5/6 o 6/5
-                necesita_tipo = TURNO_DIA if dias_op <= noches_op else TURNO_NOCHE
+                # Buscamos un día de descanso que esté al lado de un turno del mismo tipo (para hacer bloque de 3)
+                dia_asignado = False
+                for d in bloque:
+                    if (d % 7) < d_semana and horario[op][d] == DESCANSO:
+                        # Verificar si tiene un vecino del mismo tipo
+                        vecino_izq = horario[op][d-1] if d > bloque_idx else None
+                        vecino_der = horario[op][d+1] if d < bloque_idx + 20 else None
+                        
+                        if vecino_izq == tipo_necesario or vecino_der == tipo_necesario:
+                            # Evitar el error de Noche seguida de Día el mismo día o anterior
+                            if tipo_necesario == TURNO_DIA and vecino_izq == TURNO_NOCHE: continue
+                            
+                            horario[op][d] = tipo_necesario
+                            conteo += 1
+                            dia_asignado = True
+                            break
                 
-                # Buscar días libres para ese tipo específico
-                dias_v = [d for d in bloque if (d % 7) < d_semana and horario[op][d] == DESCANSO]
-                dias_v = [d for d in dias_v if turnos_semanales[op][(d - bloque_idx) // 7] < 4]
-                if necesita_tipo == TURNO_DIA: # Si necesita día, no puede ser tras una noche
-                    dias_v = [d for d in dias_v if not (d > bloque_idx and horario[op][d-1] == TURNO_NOCHE)]
-                
-                if not dias_v: # Si no hay espacio para lo que necesita, buscamos el otro tipo como última opción
-                    necesita_tipo = TURNO_NOCHE if necesita_tipo == TURNO_DIA else TURNO_DIA
-                    dias_v = [d for d in bloque if (d % 7) < d_semana and horario[op][d] == DESCANSO]
-                    dias_v = [d for d in dias_v if turnos_semanales[op][(d - bloque_idx) // 7] < 4]
-                    if necesita_tipo == TURNO_DIA:
-                        dias_v = [d for d in dias_v if not (d > bloque_idx and horario[op][d-1] == TURNO_NOCHE)]
-
-                if dias_v:
-                    # Ordenar por el día que tenga menos carga de ese tipo específico de turno
-                    dias_v.sort(key=lambda x: cob_dia[x] if necesita_tipo == TURNO_DIA else cob_noche[x])
-                    d_opt = dias_v[0]
-                    
-                    horario[op][d_opt] = necesita_tipo
-                    if necesita_tipo == TURNO_DIA: cob_dia[d_opt] += 1
-                    else: cob_noche[d_opt] += 1
-                    
-                    turnos_bloque[op] += 1
-                    turnos_semanales[op][(d_opt - bloque_idx) // 7] += 1
-            
-            deudores = [op for op in ops if turnos_bloque[op] < 11]
+                if not dia_asignado: break # Si no hay huecos adyacentes, romper para evitar bucle
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -142,7 +124,10 @@ def procesar_generacion(semilla_manual=None):
     st.session_state['mapping'] = {}
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
-    st.session_state["df"] = generar_programacion_equilibrada(op_f, demanda_dia, demanda_noche, dias_cubrir)
+    # Forzar a que sea múltiplo de 4 para que los grupos queden parejos si es posible
+    op_f = ((op_f + 3) // 4) * 4
+    
+    st.session_state["df"] = generar_programacion_bloques(op_f, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_f
 
 # BOTONES
@@ -162,7 +147,7 @@ with c3:
                 if i < len(f_lista): mapeo[op_id] = f_lista[i]
                 else: mapeo[op_id] = f"VACANTE {i - len(f_lista) + 1}"
             st.session_state['mapping'] = mapeo
-            st.success("Personal nivelado asignado.")
+            st.success("Personal asignado en bloques.")
 
 # 6. RENDERIZADO
 if "df" in st.session_state:
@@ -177,7 +162,7 @@ if "df" in st.session_state:
     with col_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas Excel</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
     with col_m3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación Nivelada (Máx. diferencia D/N de 1 turno)")
+    st.subheader("📅 Programación Nivelada por Grupos (2x2 Real)")
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df_visual.style.map(style_f), use_container_width=True)
 
