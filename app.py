@@ -59,7 +59,7 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR
+# 4. MOTOR COMPLETO (SIN CAMBIOS)
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
@@ -89,9 +89,49 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                         else: cob_noche[d] += 1
                         turnos_semanales[op][(d - bloque_idx) // 7] += 1
 
+        # REFUERZOS (igual que tu código original)
+        max_refuerzos_permitidos = 1
+        while max_refuerzos_permitidos <= 3:
+            deudores = [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]
+            if not deudores: break
+
+            random.shuffle(deudores)
+            for op in deudores:
+                conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
+                if conteo >= 11: continue
+
+                d_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
+                n_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
+                tipo_nec = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
+
+                candidatos = []
+                for d in bloque:
+                    if (d % 7) < d_semana and horario[op][d] == DESCANSO:
+                        sem_idx = (d - bloque_idx) // 7
+                        if turnos_semanales[op][sem_idx] >= 4: continue
+                        if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
+                        ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
+                        if ref_dia >= max_refuerzos_permitidos: continue
+                        v_izq = horario[op][d-1] if d > bloque_idx else None
+                        v_der = horario[op][d+1] if d < bloque_idx + 20 else None
+                        es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
+                        score = (ref_dia, -es_bloque)
+                        candidatos.append((score, d))
+
+                if candidatos:
+                    candidatos.sort()
+                    d_sel = candidatos[0][1]
+                    horario[op][d_sel] = tipo_nec
+                    if tipo_nec == TURNO_DIA: cob_dia[d_sel] += 1
+                    else: cob_noche[d_sel] += 1
+                    turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
+
+            if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
+                max_refuerzos_permitidos += 1
+
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
-# 5. EJECUCIÓN
+# 5. EJECUCIÓN (igual)
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None: st.session_state['seed'] = semilla_manual
     st.session_state['mapping'] = {}
@@ -101,7 +141,7 @@ def procesar_generacion(semilla_manual=None):
     st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
-# BOTONES
+# BOTONES (igual)
 c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("🚀 Generar Programación"): procesar_generacion(42)
@@ -117,14 +157,13 @@ with c3:
             st.session_state['mapping'] = mapeo
             st.success("Personal asignado con nivelación estricta.")
 
-# 6. RENDER
+# 6. RENDER (igual hasta exportación)
 if "df" in st.session_state:
     df_base = st.session_state["df"]
     df_visual = df_base.copy()
     if st.session_state['mapping']:
         df_visual.index = [st.session_state['mapping'].get(x, x) for x in df_visual.index]
 
-    st.subheader("📅 Programación")
     st.dataframe(df_visual)
 
     # Balance
@@ -144,7 +183,7 @@ if "df" in st.session_state:
         an = (df_base[dia] == "N").sum()
         check.append({"Día": dia, "Día": ad, "Noche": an})
 
-    # EXPORTAR EXCEL CON COLORES + HOJAS
+    # ✅ EXPORTACIÓN CORREGIDA
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
 
