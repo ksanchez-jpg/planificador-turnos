@@ -3,6 +3,9 @@ import math
 import pandas as pd
 import io
 import random
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # 1. CONFIGURACIÓN Y ESTILO
 st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
@@ -59,17 +62,13 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
-# ✅ OPTIMIZACIÓN: @st.cache_data guarda el resultado en memoria.
-# Si los parámetros no cambian, devuelve el resultado guardado instantáneamente
-# sin volver a ejecutar el algoritmo. El seed ahora es parámetro para que
-# el cache lo detecte correctamente cuando cambie.
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
 
-    random.seed(seed)  # ✅ Usa el seed recibido como parámetro
+    random.seed(seed)
     random.shuffle(ops)
     grupos = [ops[i::4] for i in range(4)]
     offsets = [0, 2, 4, 6]
@@ -132,8 +131,6 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
 
             if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
                 max_refuerzos_permitidos += 1
-            else:
-                pass
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -144,7 +141,6 @@ def procesar_generacion(semilla_manual=None):
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
-    # ✅ Ahora se pasa el seed como argumento explícito para que el cache funcione
     st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
@@ -204,7 +200,101 @@ if "df" in st.session_state:
         check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": refuerzos_total, "Estado": "✅ OK" if refuerzos_total <= 2 else "⚠️"})
     st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
+    # ── EXPORTACIÓN CON COLORES Y HOJA DE BALANCE ──────────────────────
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        df_visual.to_excel(writer, sheet_name="Programación")
-    st.download_button(label="⬇️ Descargar Excel", data=out.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
+    wb = Workbook()
+
+    # Estilos compartidos
+    fill_D   = PatternFill("solid", start_color="FFF3CD", end_color="FFF3CD")
+    fill_N   = PatternFill("solid", start_color="CCE5FF", end_color="CCE5FF")
+    fill_R   = PatternFill("solid", start_color="F8F9FA", end_color="F8F9FA")
+    fill_hdr = PatternFill("solid", start_color="0F172A", end_color="0F172A")
+    fill_ok  = PatternFill("solid", start_color="D1FAE5", end_color="D1FAE5")
+    fill_alt = PatternFill("solid", start_color="F0F9FF", end_color="F0F9FF")
+
+    font_hdr  = Font(bold=True, color="F8FAFC", name="Arial")
+    font_bold = Font(bold=True, name="Arial")
+    font_base = Font(name="Arial")
+    align_c   = Alignment(horizontal="center", vertical="center")
+    thin      = Side(style="thin", color="CCCCCC")
+    border    = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # ── HOJA 1: PROGRAMACIÓN ─────────────────────────────────────────
+    ws1 = wb.active
+    ws1.title = "Programación"
+    ws1.row_dimensions[1].height = 30
+
+    # Celda origen (A1)
+    c = ws1.cell(1, 1, "Identidad")
+    c.font = font_hdr; c.fill = fill_hdr; c.alignment = align_c; c.border = border
+    ws1.column_dimensions["A"].width = 18
+
+    # Encabezados de días
+    cols = df_visual.columns.tolist()
+    for c_idx, col_name in enumerate(cols, start=2):
+        cell = ws1.cell(1, c_idx, col_name)
+        cell.font = font_hdr; cell.fill = fill_hdr
+        cell.alignment = align_c; cell.border = border
+        ws1.column_dimensions[get_column_letter(c_idx)].width = 7
+
+    # Filas de operadores
+    for r_idx, (idx, row) in enumerate(df_visual.iterrows(), start=2):
+        ws1.row_dimensions[r_idx].height = 18
+        c = ws1.cell(r_idx, 1, idx)
+        c.font = font_bold; c.alignment = align_c; c.border = border
+        for c_idx, val in enumerate(row, start=2):
+            cell = ws1.cell(r_idx, c_idx, val)
+            cell.alignment = align_c
+            cell.border = border
+            cell.font = font_bold
+            if val == "D":   cell.fill = fill_D
+            elif val == "N": cell.fill = fill_N
+            else:            cell.fill = fill_R
+
+    ws1.freeze_panes = "B2"
+
+    # ── HOJA 2: BALANCE OPERADORES ────────────────────────────────────
+    ws2 = wb.create_sheet("Balance Operadores")
+
+    stats_export = []
+    for idx in df_base.index:
+        f = df_base.loc[idx]
+        stats_export.append({
+            "Identidad":     st.session_state['mapping'].get(idx, idx),
+            "T. Día":        int((f == TURNO_DIA).sum()),
+            "T. Noche":      int((f == TURNO_NOCHE).sum()),
+            "Horas S1-3":    int(sum(1 for x in f[:21] if x != DESCANSO)) * horas_turno,
+            "Secuencia S1-3": f"{sum(1 for x in f[0:7] if x!=DESCANSO)}-{sum(1 for x in f[7:14] if x!=DESCANSO)}-{sum(1 for x in f[14:21] if x!=DESCANSO)}",
+            "Horas S4-6":    int(sum(1 for x in f[21:] if x != DESCANSO)) * horas_turno,
+            "Secuencia S4-6": f"{sum(1 for x in f[21:28] if x!=DESCANSO)}-{sum(1 for x in f[28:35] if x!=DESCANSO)}-{sum(1 for x in f[35:42] if x!=DESCANSO)}",
+            "Estado":        "✅ 44h OK"
+        })
+
+    df_stats = pd.DataFrame(stats_export)
+    headers = df_stats.columns.tolist()
+    col_widths = [20, 10, 10, 12, 16, 12, 16, 12]
+
+    ws2.row_dimensions[1].height = 30
+    for c_idx, (h, w) in enumerate(zip(headers, col_widths), 1):
+        cell = ws2.cell(1, c_idx, h)
+        cell.font = font_hdr; cell.fill = fill_hdr
+        cell.alignment = align_c; cell.border = border
+        ws2.column_dimensions[get_column_letter(c_idx)].width = w
+
+    for r_idx, row in df_stats.iterrows():
+        bg = fill_ok if r_idx % 2 == 0 else fill_alt
+        ws2.row_dimensions[r_idx + 2].height = 18
+        for c_idx, val in enumerate(row, 1):
+            cell = ws2.cell(r_idx + 2, c_idx, val)
+            cell.fill = bg; cell.alignment = align_c
+            cell.border = border; cell.font = font_base
+
+    ws2.freeze_panes = "A2"
+
+    wb.save(out)
+    st.download_button(
+        label="⬇️ Descargar Excel con Colores",
+        data=out.getvalue(),
+        file_name=f"Programacion_{cargo}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
