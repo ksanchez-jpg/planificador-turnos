@@ -56,10 +56,8 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
         bloque = range(bloque_idx, bloque_idx + 21)
         turnos_bloque = {op: 0 for op in ops}
         racha = {op: 0 for op in ops}
-        # Control semanal para asegurar secuencias de máximo 4 días
         turnos_semanales = {op: [0, 0, 0] for op in ops}
 
-        # Seguimiento de cobertura para balanceo de refuerzos
         cob_dia = {d: 0 for d in bloque}
         cob_noche = {d: 0 for d in bloque}
 
@@ -67,14 +65,12 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             if (d % 7) >= d_semana: continue
             sem_rel = (d - bloque_idx) // 7
             
-            # Identificar obligados para bloque 2x2 [cite: 29-30]
             obligados_D, obligados_N = [], []
             for op in ops:
                 if racha[op] == 1 and turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4:
                     if d > 0 and horario[op][d-1] == TURNO_DIA: obligados_D.append(op)
                     else: obligados_N.append(op)
 
-            # Candidatos aptos (Meta de 11 y tope semanal de 4)
             aptos = [op for op in ops if turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4]
             aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO]
             random.shuffle(aptos)
@@ -133,12 +129,9 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 if (d_rand % 7) >= d_semana or horario[op][d_rand] != DESCANSO: continue
                 sem_rand = (d_rand - bloque_idx) // 7
                 
-                # Regla: No 5to día semanal y no N->D
                 if turnos_semanales[op][sem_rand] >= 4: continue 
                 if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
                 
-                # Priorizar balance entre turnos (Máximo 1 refuerzo por turno por día)
-                # Si en el día el surplus de D es menor o igual al de N, intentar en D
                 if (cob_dia[d_rand] - d_req) <= (cob_noche[d_rand] - n_req):
                     horario[op][d_rand] = TURNO_DIA
                     turnos_bloque[op] += 1
@@ -160,7 +153,6 @@ def procesar_generacion(semilla_manual=None):
     total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_base = math.ceil(total_turnos_ciclo / 11)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
-    # Asegurar mínimo de 2 cuadrillas completas por puesto para viabilidad del 2x2
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
     st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
@@ -195,9 +187,14 @@ if "df" in st.session_state:
         c1_t = sum(1 for x in fila[:21] if x != DESCANSO)
         c2_t = sum(1 for x in fila[21:] if x != DESCANSO)
         stats.append({
-            "Operador": op, "T. Día": (fila==TURNO_DIA).sum(), "T. Noche": (fila==TURNO_NCHE if 'TURNO_NCHE' in locals() else (fila==TURNO_NOCHE)).sum(),
-            "Horas S1-3": c1_t * horas_turno, "Secuencia S1-3": f"{sum(1 for x in fila[0:7] if x!=DESCANSO)}-{sum(1 for x in fila[7:14] if x!=DESCANSO)}-{sum(1 for x in fila[14:21] if x!=DESCANSO)}",
-            "Horas S4-6": c2_t * horas_turno, "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
+            "Operador": op, 
+            "T. Día": (fila==TURNO_DIA).sum(), 
+            "T. Noche": (fila==TURNO_NOCHE).sum(),
+            "Horas S1-3": c1_t * horas_turno, 
+            "Secuencia S1-3": f"{sum(1 for x in fila[0:7] if x!=DESCANSO)}-{sum(1 for x in fila[7:14] if x!=DESCANSO)}-{sum(1 for x in fila[14:21] if x!=DESCANSO)}",
+            "Horas S4-6": c2_t * horas_turno, 
+            "Secuencia S4-6": f"{sum(1 for x in fila[21:28] if x!=DESCANSO)}-{sum(1 for x in fila[28:35] if x!=DESCANSO)}-{sum(1 for x in fila[35:42] if x!=DESCANSO)}", # NUEVA COLUMNA
+            "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
         })
     st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
 
