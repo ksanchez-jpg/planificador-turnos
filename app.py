@@ -23,10 +23,36 @@ st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, máximo 4 días/semana y
 if 'seed' not in st.session_state:
     st.session_state['seed'] = 42
 
-# 2. SIDEBAR - PARÁMETROS
+# 2. SIDEBAR - PARÁMETROS E INTEGRACIÓN EXCEL
 with st.sidebar:
+    st.header("📂 Base de Datos")
+    # Opción de adjuntar archivo Excel
+    archivo_subido = st.file_uploader("Adjuntar archivo COSECHA.xlsx", type=["xlsx"])
+    
+    cargo_detectado = "Cosechador"
+    num_fichas_detectadas = 0
+    lista_fichas_reales = []
+
+    if archivo_subido:
+        # Leer el archivo y sus hojas
+        excel_file = pd.ExcelFile(archivo_subido)
+        hojas = excel_file.sheet_names
+        # Opción para escoger hoja cargo
+        hoja_seleccionada = st.selectbox("Escoger hoja cargo", hojas)
+        
+        # Leer la hoja seleccionada empezando conteo desde la fila 2
+        df_nomina = pd.read_excel(archivo_subido, sheet_name=hoja_seleccionada)
+        cargo_detectado = hoja_seleccionada
+        
+        if not df_nomina.empty:
+            # Capturar fichas de la columna A (índice 0)
+            lista_fichas_reales = df_nomina.iloc[:, 0].dropna().astype(str).tolist()
+            num_fichas_detectadas = len(lista_fichas_reales)
+            st.success(f"Detectadas {num_fichas_detectadas} fichas.")
+
     st.header("👤 Parámetros")
-    cargo = st.text_input("Nombre del Cargo", value="Cosechador")
+    # El nombre del cargo se sincroniza con la hoja
+    cargo = st.text_input("Nombre del Cargo", value=cargo_detectado)
     
     st.header("📊 Parámetros Operativos")
     demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=5)
@@ -37,7 +63,8 @@ with st.sidebar:
     st.header("🧠 Modelo y Ajustes")
     factor_cobertura = st.slider("Factor de holgura técnica", 1.0, 1.5, 1.0, 0.01)
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=20)
+    # Operadores actuales toma el valor del conteo de fichas
+    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=num_fichas_detectadas if num_fichas_detectadas > 0 else 20)
 
 # 3. CONSTANTES
 SEMANAS = 6
@@ -46,9 +73,18 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN (LÓGICA CORRECTA Y BALANCEADA)
-def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
-    ops = [f"Op {i+1}" for i in range(n_ops)]
+def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana, fichas_base):
+    # Asignación aleatoria de fichas e identidades vacantes
     random.seed(st.session_state['seed'])
+    fichas_disponibles = random.sample(fichas_base, len(fichas_base)) if fichas_base else []
+    
+    ops = []
+    for i in range(n_ops):
+        if i < len(fichas_disponibles):
+            ops.append(fichas_disponibles[i])
+        else:
+            ops.append(f"VACANTE {i - len(fichas_disponibles) + 1}")
+
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
 
@@ -120,10 +156,9 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             for op in ops:
                 if op not in trabajaron: racha[op] = 0
 
-        # --- AJUSTE FINAL: BALANCEADOR DE REFUERZOS Y EQUIDAD INDIVIDUAL --- 
+        # --- AJUSTE FINAL: BALANCEADOR DE REFUERZOS ---
         for op in ops:
             while turnos_bloque[op] < 11:
-                # Buscar días de descanso válidos en el bloque actual
                 dias_validos = []
                 for d in bloque:
                     sem_rel = (d - bloque_idx) // 7
@@ -131,20 +166,16 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                         if not (d > bloque_idx and horario[op][d-1] == TURNO_NOCHE):
                             dias_validos.append(d)
                 
-                if not dias_validos: break # No hay más huecos legales para este operador
+                if not dias_validos: break
                 
-                # Priorizar días con menor personal total asignado para distribuir refuerzos equitativamente
                 dias_validos.sort(key=lambda x: (cob_dia[x] + cob_noche[x]))
                 d_optimo = dias_validos[0]
                 sem_optimo = (d_optimo - bloque_idx) // 7
                 
-                # Calcular balance personal actual (Día vs Noche) para este operador
                 total_d = sum(1 for dia_idx in range(DIAS_TOTALES) if horario[op][dia_idx] == TURNO_DIA)
                 total_n = sum(1 for dia_idx in range(DIAS_TOTALES) if horario[op][dia_idx] == TURNO_NOCHE)
                 
-                # Decidir el turno basándose en el balance personal y la carga actual del día
                 if total_d <= total_n:
-                    # El operador necesita más turnos de día para equilibrarse
                     if (cob_dia[d_optimo] - d_req) <= (cob_noche[d_optimo] - n_req):
                         horario[op][d_optimo] = TURNO_DIA
                         cob_dia[d_optimo] += 1
@@ -152,7 +183,6 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                         horario[op][d_optimo] = TURNO_NOCHE
                         cob_noche[d_optimo] += 1
                 else:
-                    # El operador necesita más turnos de noche
                     if (cob_noche[d_optimo] - n_req) <= (cob_dia[d_optimo] - d_req):
                         horario[op][d_optimo] = TURNO_NOCHE
                         cob_noche[d_optimo] += 1
@@ -175,7 +205,8 @@ def procesar_generacion(semilla_manual=None):
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
+    # Se pasa la lista de fichas cargada del excel
+    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir, lista_fichas_reales)
     st.session_state["op_final"] = op_final
 
 col1, col2 = st.columns(2)
@@ -193,10 +224,10 @@ if "df" in st.session_state:
     
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown(f'<div class="metric-box-green"><div>{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box-green"><div>Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div>Fichas en Nómina</div><div class="metric-value-dark">{len(lista_fichas_reales)}</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación del Personal (Bloques 2x2)")
+    st.subheader("📅 Programación del Personal (Por Ficha / Vacante)")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
@@ -207,16 +238,17 @@ if "df" in st.session_state:
         c1_t = sum(1 for x in fila[:21] if x != DESCANSO)
         c2_t = sum(1 for x in fila[21:] if x != DESCANSO)
         stats.append({
-            "Operador": op, 
+            "Ficha / Identidad": op, 
             "T. Día": (fila==TURNO_DIA).sum(), 
-            "T. Noche": (fila==TURNO_NCHE if 'TURNO_NCHE' in locals() else (fila==TURNO_NOCHE)).sum(),
+            "T. Noche": (fila==TURNO_NOCHE).sum(),
             "Horas S1-3": c1_t * horas_turno, 
             "Secuencia S1-3": f"{sum(1 for x in fila[0:7] if x!=DESCANSO)}-{sum(1 for x in fila[7:14] if x!=DESCANSO)}-{sum(1 for x in fila[14:21] if x!=DESCANSO)}",
             "Horas S4-6": c2_t * horas_turno, 
             "Secuencia S4-6": f"{sum(1 for x in fila[21:28] if x!=DESCANSO)}-{sum(1 for x in fila[28:35] if x!=DESCANSO)}-{sum(1 for x in fila[35:42] if x!=DESCANSO)}",
             "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
         })
-    st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
+    df_stats = pd.DataFrame(stats).set_index("Ficha / Identidad")
+    st.dataframe(df_stats, use_container_width=True)
 
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
@@ -228,5 +260,5 @@ if "df" in st.session_state:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Programación")
-        pd.DataFrame(stats).to_excel(writer, sheet_name="Balance")
+        df_stats.to_excel(writer, sheet_name="Balance")
     st.download_button(label=f"⬇️ Descargar Excel {cargo}", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
