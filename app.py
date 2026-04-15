@@ -59,12 +59,17 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
-def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana):
+# ✅ OPTIMIZACIÓN: @st.cache_data guarda el resultado en memoria.
+# Si los parámetros no cambian, devuelve el resultado guardado instantáneamente
+# sin volver a ejecutar el algoritmo. El seed ahora es parámetro para que
+# el cache lo detecte correctamente cuando cambie.
+@st.cache_data
+def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
-    
-    random.seed(st.session_state['seed'])
+
+    random.seed(seed)  # ✅ Usa el seed recibido como parámetro
     random.shuffle(ops)
     grupos = [ops[i::4] for i in range(4)]
     offsets = [0, 2, 4, 6]
@@ -89,60 +94,45 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana):
                         turnos_semanales[op][(d - bloque_idx) // 7] += 1
 
         # FASE 2: REFUERZOS NIVELADOS (Máximo 2 por día)
-        # Hacemos múltiples pasadas para llenar los deudores sin saturar días
         max_refuerzos_permitidos = 1
-        while max_refuerzos_permitidos <= 3: # Subirá a 3 solo si es imposible con 2
+        while max_refuerzos_permitidos <= 3:
             deudores = [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]
             if not deudores: break
-            
+
             random.shuffle(deudores)
             for op in deudores:
                 conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
                 if conteo >= 11: continue
-                
-                # Balance individual D/N
+
                 d_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
                 n_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
                 tipo_nec = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
-                
-                # Evaluar todos los días libres del bloque
+
                 candidatos = []
                 for d in bloque:
                     if (d % 7) < d_semana and horario[op][d] == DESCANSO:
                         sem_idx = (d - bloque_idx) // 7
                         if turnos_semanales[op][sem_idx] >= 4: continue
-                        
-                        # Restricción post-noche
                         if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
-                        
-                        # Límite de refuerzos estricto
                         ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
                         if ref_dia >= max_refuerzos_permitidos: continue
-                        
-                        # Puntuación del día: 
-                        # Prioridad 1: Día con menos refuerzos totales.
-                        # Prioridad 2: Si está al lado de un turno igual (bono bloque).
                         v_izq = horario[op][d-1] if d > bloque_idx else None
                         v_der = horario[op][d+1] if d < bloque_idx + 20 else None
                         es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
-                        
-                        # Score: (Carga del día, -es_bloque) -> Menos carga primero, si empatan, el que haga bloque.
                         score = (ref_dia, -es_bloque)
                         candidatos.append((score, d))
-                
+
                 if candidatos:
-                    candidatos.sort() # El score más bajo gana
+                    candidatos.sort()
                     d_sel = candidatos[0][1]
                     horario[op][d_sel] = tipo_nec
                     if tipo_nec == TURNO_DIA: cob_dia[d_sel] += 1
                     else: cob_noche[d_sel] += 1
                     turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
-            
-            # Si después de una vuelta completa todos siguen siendo deudores, subimos el techo
+
             if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
                 max_refuerzos_permitidos += 1
             else:
-                # Si logramos asignar a alguien, mantenemos el techo bajo para la siguiente vuelta
                 pass
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
@@ -154,7 +144,8 @@ def procesar_generacion(semilla_manual=None):
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
-    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir)
+    # ✅ Ahora se pasa el seed como argumento explícito para que el cache funcione
+    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
 # BOTONES
@@ -179,7 +170,7 @@ if "df" in st.session_state:
     df_visual = df_base.copy()
     if st.session_state['mapping']:
         df_visual.index = [st.session_state['mapping'].get(x, x) for x in df_visual.index]
-    
+
     op_final = st.session_state["op_final"]
     c_m1, c_m2, c_m3 = st.columns(3)
     with c_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
