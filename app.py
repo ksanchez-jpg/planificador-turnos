@@ -23,36 +23,34 @@ st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, máximo 4 días/semana y
 if 'seed' not in st.session_state:
     st.session_state['seed'] = 42
 
-# 2. SIDEBAR - PARÁMETROS E INTEGRACIÓN EXCEL
+# --- INICIO DE MODIFICACIÓN: CARGA DE EXCEL ---
+fichas_excel = []
+cargo_default = "Cosechador"
+nomina_default = 20
+
 with st.sidebar:
     st.header("📂 Base de Datos")
-    # Opción de adjuntar archivo Excel
     archivo_subido = st.file_uploader("Adjuntar archivo COSECHA.xlsx", type=["xlsx"])
     
-    cargo_detectado = "Cosechador"
-    num_fichas_detectadas = 0
-    lista_fichas_reales = []
-
     if archivo_subido:
-        # Leer el archivo y sus hojas
-        excel_file = pd.ExcelFile(archivo_subido)
-        hojas = excel_file.sheet_names
-        # Opción para escoger hoja cargo
-        hoja_seleccionada = st.selectbox("Escoger hoja cargo", hojas)
+        excel_obj = pd.ExcelFile(archivo_subido)
+        hojas_disponibles = excel_obj.sheet_names
+        hoja_sel = st.selectbox("Escoger hoja cargo", hojas_disponibles)
         
-        # Leer la hoja seleccionada empezando conteo desde la fila 2
-        df_nomina = pd.read_excel(archivo_subido, sheet_name=hoja_seleccionada)
-        cargo_detectado = hoja_seleccionada
+        # Leer hoja (asume que fila 1 son rótulos)
+        df_excel = pd.read_excel(archivo_subido, sheet_name=hoja_sel)
+        cargo_default = hoja_sel
         
-        if not df_nomina.empty:
-            # Capturar fichas de la columna A (índice 0)
-            lista_fichas_reales = df_nomina.iloc[:, 0].dropna().astype(str).tolist()
-            num_fichas_detectadas = len(lista_fichas_reales)
-            st.success(f"Detectadas {num_fichas_detectadas} fichas.")
+        # Obtener fichas de Columna A (índice 0)
+        if not df_excel.empty:
+            fichas_excel = df_excel.iloc[:, 0].dropna().astype(str).tolist()
+            nomina_default = len(fichas_excel)
+# --- FIN DE MODIFICACIÓN ---
 
+# 2. SIDEBAR - PARÁMETROS
+with st.sidebar:
     st.header("👤 Parámetros")
-    # El nombre del cargo se sincroniza con la hoja
-    cargo = st.text_input("Nombre del Cargo", value=cargo_detectado)
+    cargo = st.text_input("Nombre del Cargo", value=cargo_default)
     
     st.header("📊 Parámetros Operativos")
     demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=5)
@@ -63,8 +61,7 @@ with st.sidebar:
     st.header("🧠 Modelo y Ajustes")
     factor_cobertura = st.slider("Factor de holgura técnica", 1.0, 1.5, 1.0, 0.01)
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    # Operadores actuales toma el valor del conteo de fichas
-    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=num_fichas_detectadas if num_fichas_detectadas > 0 else 20)
+    operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=nomina_default)
 
 # 3. CONSTANTES
 SEMANAS = 6
@@ -73,17 +70,18 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN (LÓGICA CORRECTA Y BALANCEADA)
-def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana, fichas_base):
-    # Asignación aleatoria de fichas e identidades vacantes
+def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana, lista_identidades):
+    # --- MODIFICACIÓN: ASIGNACIÓN DE IDENTIDADES ---
     random.seed(st.session_state['seed'])
-    fichas_disponibles = random.sample(fichas_base, len(fichas_base)) if fichas_base else []
+    identidades_shuffled = random.sample(lista_identidades, len(lista_identidades)) if lista_identidades else []
     
     ops = []
     for i in range(n_ops):
-        if i < len(fichas_disponibles):
-            ops.append(fichas_disponibles[i])
+        if i < len(identidades_shuffled):
+            ops.append(identidades_shuffled[i])
         else:
-            ops.append(f"VACANTE {i - len(fichas_disponibles) + 1}")
+            ops.append(f"VACANTE {i - len(identidades_shuffled) + 1}")
+    # --- FIN MODIFICACIÓN ---
 
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     noches_acum = {op: 0 for op in ops}
@@ -205,8 +203,8 @@ def procesar_generacion(semilla_manual=None):
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
-    # Se pasa la lista de fichas cargada del excel
-    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir, lista_fichas_reales)
+    # Se añade el paso de las fichas del excel
+    st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir, fichas_excel)
     st.session_state["op_final"] = op_final
 
 col1, col2 = st.columns(2)
@@ -224,10 +222,10 @@ if "df" in st.session_state:
     
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown(f'<div class="metric-box-green"><div>{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box-green"><div>Fichas en Nómina</div><div class="metric-value-dark">{len(lista_fichas_reales)}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div>Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación del Personal (Por Ficha / Vacante)")
+    st.subheader("📅 Programación del Personal (Bloques 2x2)")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df.style.map(style_func), use_container_width=True)
 
