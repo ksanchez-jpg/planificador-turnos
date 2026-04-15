@@ -3,6 +3,7 @@ import math
 import pandas as pd
 import io
 import random
+from openpyxl.styles import PatternFill # Para los colores en Excel
 
 # 1. CONFIGURACIÓN Y ESTILO
 st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
@@ -58,11 +59,10 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
+# 4. MOTOR DE PROGRAMACIÓN
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
-    # ✅ OPT: Usar listas de strings es más rápido que dict de listas para el horario
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
 
@@ -73,24 +73,17 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
 
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
-        dias_bloque = list(bloque)
-
-        # ✅ OPT: Contadores por operador en dict, actualizados incrementalmente
-        # en vez de recalcular con sum() en cada iteración
         turnos_semanales = {op: [0, 0, 0] for op in ops}
-        cob_dia   = {d: 0 for d in dias_bloque}
-        cob_noche = {d: 0 for d in dias_bloque}
-
-        # ✅ OPT: Contadores individuales D/N/Total por operador
+        cob_dia   = {d: 0 for d in bloque}
+        cob_noche = {d: 0 for d in bloque}
         cnt_total = {op: 0 for op in ops}
         cnt_dia   = {op: 0 for op in ops}
         cnt_noche = {op: 0 for op in ops}
 
-        # FASE 1: ASIGNACIÓN BASE
         for g_idx, grupo_ops in enumerate(grupos):
             off = offsets[g_idx]
             for op in grupo_ops:
-                for d in dias_bloque:
+                for d in bloque:
                     if (d % 7) >= d_semana: continue
                     val = patron_maestro[(d + off) % 8]
                     if val != DESCANSO:
@@ -105,63 +98,38 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                             cob_noche[d]  += 1
                             cnt_noche[op] += 1
 
-        # FASE 2: REFUERZOS NIVELADOS
-        # ✅ OPT: Pre-calcular días válidos por operador (días laborables libres)
-        dias_laborables = [d for d in dias_bloque if (d % 7) < d_semana]
-
-        max_refuerzos_permitidos = 1
-        while max_refuerzos_permitidos <= 3:
-            # ✅ OPT: Usar el contador incremental en vez de sum() completo
+        dias_laborables = [d for d in bloque if (d % 7) < d_semana]
+        max_refuerzos = 1
+        while max_refuerzos <= 3:
             deudores = [op for op in ops if cnt_total[op] < 11]
             if not deudores: break
-
             random.shuffle(deudores)
             hubo_avance = False
-
             for op in deudores:
-                if cnt_total[op] >= 11: continue
-
-                # ✅ OPT: Usar contadores precalculados
                 tipo_nec = TURNO_DIA if cnt_dia[op] <= cnt_noche[op] else TURNO_NOCHE
-
                 candidatos = []
                 for d in dias_laborables:
                     if horario[op][d] != DESCANSO: continue
                     sem_idx = (d - bloque_idx) // 7
                     if turnos_semanales[op][sem_idx] >= 4: continue
-
-                    # Restricción post-noche
-                    if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE:
-                        continue
-
-                    # ✅ OPT: Usar contadores de cobertura directamente
+                    if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
                     ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
-                    if ref_dia >= max_refuerzos_permitidos: continue
-
+                    if ref_dia >= max_refuerzos: continue
                     v_izq = horario[op][d-1] if d > bloque_idx else None
                     v_der = horario[op][d+1] if d < bloque_idx + 20 else None
                     es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
-                    score = (ref_dia, -es_bloque)
-                    candidatos.append((score, d))
+                    candidatos.append(((ref_dia, -es_bloque), d))
 
                 if candidatos:
                     candidatos.sort()
                     d_sel = candidatos[0][1]
                     horario[op][d_sel] = tipo_nec
-                    sem_idx = (d_sel - bloque_idx) // 7
-                    turnos_semanales[op][sem_idx] += 1
+                    turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
                     cnt_total[op] += 1
                     hubo_avance = True
-                    if tipo_nec == TURNO_DIA:
-                        cob_dia[d_sel]  += 1
-                        cnt_dia[op]     += 1
-                    else:
-                        cob_noche[d_sel] += 1
-                        cnt_noche[op]    += 1
-
-            # ✅ OPT: Usa flag booleano en vez de recalcular la lista de deudores dos veces
-            if not hubo_avance:
-                max_refuerzos_permitidos += 1
+                    if tipo_nec == TURNO_DIA: cob_dia[d_sel] += 1; cnt_dia[op] += 1
+                    else: cob_noche[d_sel] += 1; cnt_noche[op] += 1
+            if not hubo_avance: max_refuerzos += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -175,7 +143,6 @@ def procesar_generacion(semilla_manual=None):
     st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
-# BOTONES
 c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("🚀 Generar Programación"): procesar_generacion(42)
@@ -187,22 +154,17 @@ with c3:
             ops_ids = st.session_state["df"].index.tolist()
             f_lista = fichas_cargadas.copy()
             random.shuffle(f_lista)
+            # CORRECCIÓN AQUÍ: f_list -> f_lista
             mapeo = {op: f_lista[i] if i < len(f_lista) else f"VACANTE {i-len(f_lista)+1}" for i, op in enumerate(ops_ids)}
             st.session_state['mapping'] = mapeo
-            st.success("Personal asignado con nivelación estricta.")
+            st.success("Personal asignado correctamente.")
 
-# 6. RENDERIZADO
+# 6. RENDERIZADO Y EXCEL
 if "df" in st.session_state:
     df_base = st.session_state["df"]
     df_visual = df_base.copy()
     if st.session_state['mapping']:
         df_visual.index = [st.session_state['mapping'].get(x, x) for x in df_visual.index]
-
-    op_final = st.session_state["op_final"]
-    c_m1, c_m2, c_m3 = st.columns(3)
-    with c_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas Nómina</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
-    with c_m3: st.markdown(f'<div class="metric-box-green"><div>Horas/Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
     st.subheader("📅 Programación (Nivelación Máxima)")
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
@@ -221,17 +183,27 @@ if "df" in st.session_state:
             "Secuencia S4-6": f"{sum(1 for x in f[21:28] if x!=DESCANSO)}-{sum(1 for x in f[28:35] if x!=DESCANSO)}-{sum(1 for x in f[35:42] if x!=DESCANSO)}",
             "Estado": "✅ 44h OK"
         })
-    st.dataframe(pd.DataFrame(stats).set_index("Identidad"), use_container_width=True)
+    df_balance = pd.DataFrame(stats).set_index("Identidad")
+    st.dataframe(df_balance, use_container_width=True)
 
-    st.subheader("✅ Validación de Cobertura (Límite Estricto 2)")
-    check = []
-    for dia in NOMBRES_DIAS:
-        ad, an = (df_base[dia] == TURNO_DIA).sum(), (df_base[dia] == TURNO_NOCHE).sum()
-        refuerzos_total = (ad-demanda_dia)+(an-demanda_noche)
-        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": refuerzos_total, "Estado": "✅ OK" if refuerzos_total <= 2 else "⚠️"})
-    st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
-
+    # --- LÓGICA DE EXCEL CON COLORES Y HOJAS ---
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df_visual.to_excel(writer, sheet_name="Programación")
-    st.download_button(label="⬇️ Descargar Excel", data=out.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
+        df_balance.to_excel(writer, sheet_name="Balance")
+        
+        # Aplicar colores a la hoja de Programación
+        workbook = writer.book
+        worksheet = workbook["Programación"]
+        fill_dia = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+        fill_noche = PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid")
+        
+        for row in worksheet.iter_rows(min_row=2, min_col=2):
+            for cell in row:
+                if cell.value == "D": cell.fill = fill_dia
+                elif cell.value == "N": cell.fill = fill_noche
+
+    st.download_button(label="⬇️ Descargar Excel Completo (Color + Balance)", 
+                       data=out.getvalue(), 
+                       file_name=f"Programacion_{cargo}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
