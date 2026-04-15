@@ -18,7 +18,7 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS - NIVELACIÓN TOTAL")
-st.caption("2x2 por bloques con Distribución Estricta de Refuerzos (Algoritmo de Llenado de Valles).")
+st.caption("Modelo 2x2. Límite ESTRICTO de 2 refuerzos por día y distribución equitativa entre Día y Noche.")
 
 if 'seed' not in st.session_state: st.session_state['seed'] = 42
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
@@ -47,18 +47,16 @@ with st.sidebar:
     demanda_noche = st.number_input(f"{cargo} Noche", min_value=1, value=5)
     horas_turno = st.number_input("Horas/turno", min_value=1, value=12)
     dias_cubrir = st.slider("Días/semana", 1, 7, 7)
-
-    st.header("🧠 Modelo y Ajustes")
-    factor_cobertura = st.slider("Factor Holgura", 1.0, 1.5, 1.0, 0.01)
+    factor_cobertura = st.slider("Holgura Técnica", 1.0, 1.5, 1.0, 0.01)
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    operadores_actuales = st.number_input(f"{cargo} actual", min_value=0, value=conteo_sugerido)
+    operadores_actuales = st.number_input(f"{cargo} en nómina", min_value=0, value=conteo_sugerido)
 
 # 3. CONSTANTES
 DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
+# 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN EQUITATIVA D/N Y LÍMITE 2
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
@@ -73,14 +71,10 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
         dias_bloque = list(bloque)
-
         turnos_semanales = {op: [0, 0, 0] for op in ops}
-        cob_dia   = {d: 0 for d in dias_bloque}
+        cob_dia = {d: 0 for d in dias_bloque}
         cob_noche = {d: 0 for d in dias_bloque}
-
-        cnt_total = {op: 0 for op in ops}
-        cnt_dia   = {op: 0 for op in ops}
-        cnt_noche = {op: 0 for op in ops}
+        cnt_total, cnt_dia, cnt_noche = {op: 0 for op in ops}, {op: 0 for op in ops}, {op: 0 for op in ops}
 
         # FASE 1: ASIGNACIÓN BASE
         for g_idx, grupo_ops in enumerate(grupos):
@@ -95,66 +89,76 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
                         turnos_semanales[op][sem_idx] += 1
                         cnt_total[op] += 1
                         if val == TURNO_DIA:
-                            cob_dia[d]  += 1
+                            cob_dia[d] += 1
                             cnt_dia[op] += 1
                         else:
-                            cob_noche[d]  += 1
+                            cob_noche[d] += 1
                             cnt_noche[op] += 1
 
-        # FASE 2: REFUERZOS NIVELADOS (ALGORITMO DE CARRETERA/VALLER)
+        # FASE 2: REFUERZOS NIVELADOS (CAP ESTRICTO 2 Y DISTRIBUCIÓN D/N)
         dias_laborables = [d for d in dias_bloque if (d % 7) < d_semana]
         
-        # Repartimos un turno a la vez (Carrusel) para que todos compitan por los días vacíos
-        max_vueltas = 11 # Máximo de turnos por bloque
-        for _ in range(max_vueltas):
+        # Usamos capas de carrusel para que todos los operadores busquen valles al mismo tiempo
+        for techo_global in [0, 1, 2]: # Intentamos llenar días con 0 refuerzos, luego 1, luego 2.
             deudores = [op for op in ops if cnt_total[op] < 11]
             if not deudores: break
             random.shuffle(deudores)
 
             for op in deudores:
                 if cnt_total[op] >= 11: continue
-
-                # Recalcular tipo necesario para mantener balance 5/6 o 6/5
-                tipo_nec = TURNO_DIA if cnt_dia[op] <= cnt_noche[op] else TURNO_NOCHE
-
+                
+                # Criterio de tipo necesario por balance individual
+                # Pero también miramos dónde hay menos refuerzos en el día
                 candidatos = []
                 for d in dias_laborables:
                     if horario[op][d] != DESCANSO: continue
                     sem_idx = (d - bloque_idx) // 7
                     if turnos_semanales[op][sem_idx] >= 4: continue
 
-                    # Restricción post-noche
-                    if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE:
-                        continue
+                    # Calculamos refuerzos totales del día actual
+                    ref_totales = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
+                    if ref_totales > techo_global: continue
 
-                    # Cálculo de refuerzos actuales
-                    ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
-                    
-                    # Penalizamos fuertemente los días que ya tienen refuerzos
-                    v_izq = horario[op][d-1] if d > bloque_idx else None
-                    v_der = horario[op][d+1] if d < bloque_idx + 20 else None
-                    es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
-                    
-                    # Score prioriza: 1. Días con menos refuerzos totales, 2. Formar bloques
-                    score = (ref_dia, -es_bloque)
-                    candidatos.append((score, d))
+                    # Evaluar ambos tipos de turno para este día
+                    for tipo in [TURNO_DIA, TURNO_NOCHE]:
+                        # Restricción post-noche
+                        if tipo == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
+                        
+                        # Balance individual: si el operador ya tiene muchos de un tipo, penalizar ese tipo
+                        bal_ind = cnt_dia[op] if tipo == TURNO_DIA else cnt_noche[op]
+                        
+                        # Distribución en el turno: ¿Cuántos refuerzos tiene ya este turno específico?
+                        ref_turno = (cob_dia[d] - d_req) if tipo == TURNO_DIA else (cob_noche[d] - n_req)
+                        
+                        v_izq = horario[op][d-1] if d > bloque_idx else None
+                        v_der = horario[op][d+1] if d < bloque_idx + 20 else None
+                        es_bloque = 1 if (v_izq == tipo or v_der == tipo) else 0
+                        
+                        # SCORE: 
+                        # 1. Refuerzos totales del día (lo más importante para no pasar de 2)
+                        # 2. Refuerzos específicos del turno (para distribuir D y N)
+                        # 3. Balance individual del operador
+                        # 4. Formar bloques (prioridad baja si la cobertura está en juego)
+                        score = (ref_totales, ref_turno, bal_ind, -es_bloque)
+                        candidatos.append((score, d, tipo))
 
                 if candidatos:
-                    candidatos.sort() # Elige el día con el mínimo "ref_dia"
-                    d_sel = candidatos[0][1]
+                    candidatos.sort()
+                    best_score, d_sel, tipo_sel = candidatos[0]
                     
-                    # Verificamos si incluso el mejor día no excede un límite razonable (2 por ahora)
-                    # Si el mejor día ya tiene 2 refuerzos, solo asignamos si no hay más opción
-                    horario[op][d_sel] = tipo_nec
-                    sem_idx = (d_sel - bloque_idx) // 7
-                    turnos_semanales[op][sem_idx] += 1
+                    # Verificación de seguridad final
+                    ref_final = (cob_dia[d_sel] - d_req) + (cob_noche[d_sel] - n_req)
+                    if ref_final >= 2 and techo_global < 2: continue # Esperar a la siguiente capa
+
+                    horario[op][d_sel] = tipo_sel
+                    turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
                     cnt_total[op] += 1
-                    if tipo_nec == TURNO_DIA:
-                        cob_dia[d_sel]  += 1
-                        cnt_dia[op]     += 1
+                    if tipo_sel == TURNO_DIA:
+                        cob_dia[d_sel] += 1
+                        cnt_dia[op] += 1
                     else:
                         cob_noche[d_sel] += 1
-                        cnt_noche[op]    += 1
+                        cnt_noche[op] += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -195,7 +199,7 @@ if "df" in st.session_state:
     c_m1, c_m2, c_m3 = st.columns(3)
     with c_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
     with c_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas Nómina</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
-    with c_m3: st.markdown(f'<div class="metric-box-green"><div>Horas/Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with m3 := st.empty(): st.markdown(f'<div class="metric-box-green"><div>Horas/Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
     st.subheader("📅 Programación (Nivelación Máxima)")
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
@@ -216,12 +220,22 @@ if "df" in st.session_state:
         })
     st.dataframe(pd.DataFrame(stats).set_index("Identidad"), use_container_width=True)
 
-    st.subheader("✅ Validación de Cobertura (Límite Estricto 2)")
+    st.subheader("✅ Validación de Cobertura (Límite ESTRICTO 2)")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df_base[dia] == TURNO_DIA).sum(), (df_base[dia] == TURNO_NOCHE).sum()
-        refuerzos_total = (ad-demanda_dia)+(an-demanda_noche)
-        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": refuerzos_total, "Estado": "✅ OK" if refuerzos_total <= 2 else "⚠️"})
+        ref_d = (ad-demanda_dia)
+        ref_n = (an-demanda_noche)
+        ref_tot = ref_d + ref_n
+        check.append({
+            "Día": dia, 
+            "Día (Asig)": ad, 
+            "Noche (Asig)": an, 
+            "Ref. Día": ref_d, 
+            "Ref. Noche": ref_n, 
+            "Total Refuerzos": ref_tot, 
+            "Estado": "✅ OK" if ref_tot <= 2 else "❌"
+        })
     st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
     out = io.BytesIO()
