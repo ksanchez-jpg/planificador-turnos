@@ -59,81 +59,109 @@ TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
 # 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
-# ✅ OPTIMIZACIÓN: @st.cache_data guarda el resultado en memoria.
-# Si los parámetros no cambian, devuelve el resultado guardado instantáneamente
-# sin volver a ejecutar el algoritmo. El seed ahora es parámetro para que
-# el cache lo detecte correctamente cuando cambie.
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
+    # ✅ OPT: Usar listas de strings es más rápido que dict de listas para el horario
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
 
-    random.seed(seed)  # ✅ Usa el seed recibido como parámetro
+    random.seed(seed)
     random.shuffle(ops)
     grupos = [ops[i::4] for i in range(4)]
     offsets = [0, 2, 4, 6]
 
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
+        dias_bloque = list(bloque)
+
+        # ✅ OPT: Contadores por operador en dict, actualizados incrementalmente
+        # en vez de recalcular con sum() en cada iteración
         turnos_semanales = {op: [0, 0, 0] for op in ops}
-        cob_dia = {d: 0 for d in bloque}
-        cob_noche = {d: 0 for d in bloque}
+        cob_dia   = {d: 0 for d in dias_bloque}
+        cob_noche = {d: 0 for d in dias_bloque}
+
+        # ✅ OPT: Contadores individuales D/N/Total por operador
+        cnt_total = {op: 0 for op in ops}
+        cnt_dia   = {op: 0 for op in ops}
+        cnt_noche = {op: 0 for op in ops}
 
         # FASE 1: ASIGNACIÓN BASE
         for g_idx, grupo_ops in enumerate(grupos):
             off = offsets[g_idx]
             for op in grupo_ops:
-                for d in bloque:
+                for d in dias_bloque:
                     if (d % 7) >= d_semana: continue
                     val = patron_maestro[(d + off) % 8]
                     if val != DESCANSO:
                         horario[op][d] = val
-                        if val == TURNO_DIA: cob_dia[d] += 1
-                        else: cob_noche[d] += 1
-                        turnos_semanales[op][(d - bloque_idx) // 7] += 1
+                        sem_idx = (d - bloque_idx) // 7
+                        turnos_semanales[op][sem_idx] += 1
+                        cnt_total[op] += 1
+                        if val == TURNO_DIA:
+                            cob_dia[d]  += 1
+                            cnt_dia[op] += 1
+                        else:
+                            cob_noche[d]  += 1
+                            cnt_noche[op] += 1
 
-        # FASE 2: REFUERZOS NIVELADOS (Máximo 2 por día)
+        # FASE 2: REFUERZOS NIVELADOS
+        # ✅ OPT: Pre-calcular días válidos por operador (días laborables libres)
+        dias_laborables = [d for d in dias_bloque if (d % 7) < d_semana]
+
         max_refuerzos_permitidos = 1
         while max_refuerzos_permitidos <= 3:
-            deudores = [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]
+            # ✅ OPT: Usar el contador incremental en vez de sum() completo
+            deudores = [op for op in ops if cnt_total[op] < 11]
             if not deudores: break
 
             random.shuffle(deudores)
-            for op in deudores:
-                conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
-                if conteo >= 11: continue
+            hubo_avance = False
 
-                d_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
-                n_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
-                tipo_nec = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
+            for op in deudores:
+                if cnt_total[op] >= 11: continue
+
+                # ✅ OPT: Usar contadores precalculados
+                tipo_nec = TURNO_DIA if cnt_dia[op] <= cnt_noche[op] else TURNO_NOCHE
 
                 candidatos = []
-                for d in bloque:
-                    if (d % 7) < d_semana and horario[op][d] == DESCANSO:
-                        sem_idx = (d - bloque_idx) // 7
-                        if turnos_semanales[op][sem_idx] >= 4: continue
-                        if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
-                        ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
-                        if ref_dia >= max_refuerzos_permitidos: continue
-                        v_izq = horario[op][d-1] if d > bloque_idx else None
-                        v_der = horario[op][d+1] if d < bloque_idx + 20 else None
-                        es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
-                        score = (ref_dia, -es_bloque)
-                        candidatos.append((score, d))
+                for d in dias_laborables:
+                    if horario[op][d] != DESCANSO: continue
+                    sem_idx = (d - bloque_idx) // 7
+                    if turnos_semanales[op][sem_idx] >= 4: continue
+
+                    # Restricción post-noche
+                    if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE:
+                        continue
+
+                    # ✅ OPT: Usar contadores de cobertura directamente
+                    ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
+                    if ref_dia >= max_refuerzos_permitidos: continue
+
+                    v_izq = horario[op][d-1] if d > bloque_idx else None
+                    v_der = horario[op][d+1] if d < bloque_idx + 20 else None
+                    es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
+                    score = (ref_dia, -es_bloque)
+                    candidatos.append((score, d))
 
                 if candidatos:
                     candidatos.sort()
                     d_sel = candidatos[0][1]
                     horario[op][d_sel] = tipo_nec
-                    if tipo_nec == TURNO_DIA: cob_dia[d_sel] += 1
-                    else: cob_noche[d_sel] += 1
-                    turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
+                    sem_idx = (d_sel - bloque_idx) // 7
+                    turnos_semanales[op][sem_idx] += 1
+                    cnt_total[op] += 1
+                    hubo_avance = True
+                    if tipo_nec == TURNO_DIA:
+                        cob_dia[d_sel]  += 1
+                        cnt_dia[op]     += 1
+                    else:
+                        cob_noche[d_sel] += 1
+                        cnt_noche[op]    += 1
 
-            if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
+            # ✅ OPT: Usa flag booleano en vez de recalcular la lista de deudores dos veces
+            if not hubo_avance:
                 max_refuerzos_permitidos += 1
-            else:
-                pass
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -144,7 +172,6 @@ def procesar_generacion(semilla_manual=None):
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
-    # ✅ Ahora se pasa el seed como argumento explícito para que el cache funcione
     st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
