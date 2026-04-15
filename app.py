@@ -17,13 +17,14 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, balance individual D/N reforzado.")
+st.title("🗓 PROGRAMACIÓN DE TURNOS PRO")
+st.caption("Objetivo: 132h, Modelo 2x2, 6 Semanas y Nivelación Estricta por Carrusel.")
 
+# Inicializar estados de memoria
 if 'seed' not in st.session_state: st.session_state['seed'] = 42
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
 
-# --- AJUSTE 1: LECTURA ROBUSTA DE EXCEL ---
+# --- BLOQUE DE EXCEL (COSECHA.xlsx) ---
 fichas_cargadas = []
 cargo_sugerido = "Cosechador"
 conteo_sugerido = 20
@@ -35,20 +36,15 @@ with st.sidebar:
     if archivo_subido:
         excel_data = pd.ExcelFile(archivo_subido)
         hoja_sel = st.selectbox("Escoger hoja cargo", excel_data.sheet_names)
-        
-        # Leemos asegurando que no ignore nada por tipo de dato
         df_excel = pd.read_excel(archivo_subido, sheet_name=hoja_sel)
         cargo_sugerido = hoja_sel
         if not df_excel.empty:
-            # .strip() elimina espacios accidentales que causan conteos erróneos
             fichas_cargadas = df_excel.iloc[:, 0].dropna().astype(str).str.strip().tolist()
             conteo_sugerido = len(fichas_cargadas)
-            st.info(f"Leídas {conteo_sugerido} fichas en total.")
+            st.info(f"Leídas {conteo_sugerido} fichas únicas.")
 
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value=cargo_sugerido)
-    
-    st.header("📊 Parámetros Operativos")
     demanda_dia = st.number_input(f"{cargo} requerido (Día)", min_value=1, value=5)
     demanda_noche = st.number_input(f"{cargo} requerido (Noche)", min_value=1, value=5)
     horas_turno = st.number_input("Horas por turno", min_value=1, value=12)
@@ -65,8 +61,8 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN (CON AJUSTE DE BALANCE D/N)
-def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
+# 4. MOTOR DE PROGRAMACIÓN CON CARRUSEL Y BALANCE INDIVIDUAL
+def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(st.session_state['seed'])
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
@@ -80,74 +76,72 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
         cob_dia = {d: 0 for d in bloque}
         cob_noche = {d: 0 for d in bloque}
 
+        # --- FASE 1: BASE 2X2 (COBERTURA MÍNIMA) ---
         for d in bloque:
             if (d % 7) >= d_semana: continue
             sem_rel = (d - bloque_idx) // 7
-            obligados_D, obligados_N = [], []
-            for op in ops:
-                if racha[op] == 1 and turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4:
-                    if d > 0 and horario[op][d-1] == TURNO_DIA: obligados_D.append(op)
-                    else: obligados_N.append(op)
-
             aptos = [op for op in ops if turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4]
             aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO]
             random.shuffle(aptos)
 
-            asignados_n = []
-            prioridad_n = [o for o in obligados_N if o in aptos] + [o for o in obligados_D if o in aptos and random.random() < 0.3]
-            for op in prioridad_n:
-                if len(asignados_n) < n_req: asignados_n.append(op)
-            resto_n = [o for o in aptos if o not in asignados_n]
-            resto_n.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
-            while len(asignados_n) < n_req and resto_n: asignados_n.append(resto_n.pop(0))
-
+            # Noche
+            asignados_n = aptos[:n_req]
             for op in asignados_n:
-                horario[op][d], turnos_bloque[op], turnos_semanales[op][sem_rel], cob_noche[d], noches_acum[op], racha[op] = TURNO_NOCHE, turnos_bloque[op]+1, turnos_semanales[op][sem_rel]+1, cob_noche[d]+1, noches_acum[op]+1, racha[op]+1
+                horario[op][d], turnos_bloque[op], turnos_semanales[op][sem_rel], cob_noche[d], racha[op] = TURNO_NOCHE, turnos_bloque[op]+1, turnos_semanales[op][sem_rel]+1, cob_noche[d]+1, racha[op]+1
 
+            # Día (Respetando descanso post-noche)
             ya_n = set(asignados_n)
             cand_d = [op for op in aptos if op not in ya_n]
             if d > bloque_idx: cand_d = [o for o in cand_d if horario[o][d-1] != TURNO_NOCHE]
-            asignados_d = []
-            for op in [o for o in obligados_D if o in cand_d]:
-                if len(asignados_d) < d_req: asignados_d.append(op)
-            resto_d = [o for o in cand_d if o not in asignados_d]
-            resto_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
-            while len(asignados_d) < d_req and resto_d: asignados_d.append(resto_d.pop(0))
-
+            asignados_d = cand_d[:d_req]
             for op in asignados_d:
                 horario[op][d], turnos_bloque[op], turnos_semanales[op][sem_rel], cob_dia[d], racha[op] = TURNO_DIA, turnos_bloque[op]+1, turnos_semanales[op][sem_rel]+1, cob_dia[d]+1, racha[op]+1
 
             for op in ops:
                 if op not in (set(asignados_n) | set(asignados_d)): racha[op] = 0
 
-        # --- AJUSTE 2: REFUERZO DE BALANCE D/N (Evitar desproporción 7/15) ---
-        for op in ops:
-            while turnos_bloque[op] < 11:
-                dias_v = [d for d in bloque if (d % 7) < d_semana and horario[op][d] == DESCANSO and turnos_semanales[op][(d-bloque_idx)//7] < 4]
+        # --- FASE 2: AJUSTE FINAL (CARRUSEL Y BALANCE INDIVIDUAL) ---
+        # Paso A: Quiénes faltan por llegar a 11
+        deudores = [op for op in ops if turnos_bloque[op] < 11]
+        
+        while deudores:
+            for op in deudores:
+                if turnos_bloque[op] >= 11: continue
+                
+                # Paso B: Buscar días legales
+                dias_v = [d for d in bloque if (d % 7) < d_semana and horario[op][d] == DESCANSO]
+                dias_v = [d for d in dias_v if turnos_semanales[op][(d - bloque_idx) // 7] < 4]
                 dias_v = [d for d in dias_v if not (d > bloque_idx and horario[op][d-1] == TURNO_NOCHE)]
-                if not dias_v: break
                 
-                # Priorizar días más vacíos
+                if not dias_v: continue
+                
+                # Paso C: Criterio de Nivelación (Carga de día vs Balance personal)
+                # Contamos balance histórico del operador
+                act_d = sum(1 for di in range(DIAS_TOTALES) if horario[op][di] == TURNO_DIA)
+                act_n = sum(1 for di in range(DIAS_TOTALES) if horario[op][di] == TURNO_NOCHE)
+                
+                # Ordenar días por cobertura total (Suavizado)
                 dias_v.sort(key=lambda x: (cob_dia[x] + cob_noche[x]))
-                d_opt, sem_opt = dias_v[0], (dias_v[0]-bloque_idx)//7
+                d_opt = dias_v[0]
                 
-                # Balance Individual Estricto
-                actual_d = sum(1 for di in range(DIAS_TOTALES) if horario[op][di] == TURNO_DIA)
-                actual_n = sum(1 for di in range(DIAS_TOTALES) if horario[op][di] == TURNO_NOCHE)
-                
-                # Forzar el turno que más le falte al operador
-                if actual_d < actual_n:
-                    horario[op][d_opt], cob_dia[d_opt] = TURNO_DIA, cob_dia[d_opt]+1
-                elif actual_n < actual_d:
-                    horario[op][d_opt], cob_noche[d_opt] = TURNO_NOCHE, cob_noche[d_opt]+1
-                else:
-                    # Si está equilibrado, elegir el turno más vacío del día
-                    if cob_dia[d_opt] <= cob_noche[d_opt]:
+                # Decisión de turno por Presupuesto Individual
+                if act_d <= act_n:
+                    # Intenta equilibrar con un Día si el día lo permite
+                    if (cob_dia[d_opt] - d_req) <= (cob_noche[d_opt] - n_req):
                         horario[op][d_opt], cob_dia[d_opt] = TURNO_DIA, cob_dia[d_opt]+1
                     else:
                         horario[op][d_opt], cob_noche[d_opt] = TURNO_NOCHE, cob_noche[d_opt]+1
+                else:
+                    # Intenta equilibrar con una Noche
+                    if (cob_noche[d_opt] - n_req) <= (cob_dia[d_opt] - d_req):
+                        horario[op][d_opt], cob_noche[d_opt] = TURNO_NOCHE, cob_noche[d_opt]+1
+                    else:
+                        horario[op][d_opt], cob_dia[d_opt] = TURNO_DIA, cob_dia[d_opt]+1
                 
-                turnos_bloque[op], turnos_semanales[op][sem_opt] = turnos_bloque[op]+1, turnos_semanales[op][sem_opt]+1
+                turnos_bloque[op] += 1
+                turnos_semanales[op][(d_opt - bloque_idx) // 7] += 1
+            
+            deudores = [op for op in ops if turnos_bloque[op] < 11]
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -157,7 +151,7 @@ def procesar_generacion(semilla_manual=None):
     st.session_state['mapping'] = {}
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
-    st.session_state["df"] = generar_programacion_equitativa(op_f, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_f
 
 # BOTONES
@@ -169,18 +163,17 @@ with c2_b:
 with c3_b:
     if st.button("👤 Asignar Personal Real"):
         if "df" in st.session_state:
-            ops_actuales = st.session_state["df"].index.tolist()
-            # Usamos todas las fichas cargadas sin excepción
+            ops_ids = st.session_state["df"].index.tolist()
             f_lista = fichas_cargadas.copy()
             random.shuffle(f_lista)
-            mapeo_temp = {}
-            for i, op_id in enumerate(ops_actuales):
-                if i < len(f_lista): mapeo_temp[op_id] = f_lista[i]
-                else: mapeo_temp[op_id] = f"VACANTE {i - len(f_lista) + 1}"
-            st.session_state['mapping'] = mapeo_temp
-            st.success("Personal asignado visualmente.")
+            mapeo = {}
+            for i, op_id in enumerate(ops_ids):
+                if i < len(f_lista): mapeo[op_id] = f_lista[i]
+                else: mapeo[op_id] = f"VACANTE {i - len(f_lista) + 1}"
+            st.session_state['mapping'] = mapeo
+            st.success("Personal nivelado asignado.")
 
-# 6. RENDERIZADO
+# 6. RENDERIZADO VISUAL (CAPA SEGURA)
 if "df" in st.session_state:
     df_base = st.session_state["df"]
     df_visual = df_base.copy()
@@ -190,11 +183,11 @@ if "df" in st.session_state:
     op_final = st.session_state["op_final"]
     
     col_m1, col_m2, col_m3 = st.columns(3)
-    with col_m1: st.markdown(f'<div class="metric-box-green"><div>{cargo} Requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
+    with col_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
     with col_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas en Nómina</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
-    with col_m3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with col_m3: st.markdown(f'<div class="metric-box-green"><div>Vacantes</div><div class="metric-value-dark">{max(0, op_final - len(fichas_cargadas))}</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación del Personal")
+    st.subheader("📅 Programación del Personal (Nivelada)")
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df_visual.style.map(style_f), use_container_width=True)
 
@@ -202,10 +195,9 @@ if "df" in st.session_state:
     stats = []
     for idx_orig in df_base.index:
         f = df_base.loc[idx_orig]
-        identidad_visual = st.session_state['mapping'].get(idx_orig, idx_orig)
+        identidad = st.session_state['mapping'].get(idx_orig, idx_orig)
         stats.append({
-            "Identidad": identidad_visual, 
-            "T. Día": (f==TURNO_DIA).sum(), "T. Noche": (f==TURNO_NOCHE).sum(),
+            "Identidad": identidad, "T. Día": (f==TURNO_DIA).sum(), "T. Noche": (f==TURNO_NOCHE).sum(),
             "Horas S1-3": sum(1 for x in f[:21] if x != DESCANSO) * horas_turno,
             "Secuencia S1-3": f"{sum(1 for x in f[0:7] if x!=DESCANSO)}-{sum(1 for x in f[7:14] if x!=DESCANSO)}-{sum(1 for x in f[14:21] if x!=DESCANSO)}",
             "Horas S4-6": sum(1 for x in f[21:] if x != DESCANSO) * horas_turno,
