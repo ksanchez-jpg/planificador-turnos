@@ -4,7 +4,7 @@ import pandas as pd
 import io
 import random
 
-# 1. CONFIGURACIÓN Y ESTILO
+# 1. CONFIGURACIÓN Y ESTILO [cite: 25]
 st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
 
 st.markdown("""
@@ -18,13 +18,12 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS")
-st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto (DD, NN, DN) y cobertura garantizada.")
+st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, máximo 4 días/semana y refuerzos balanceados.")
 
-# Inicializar semilla en el estado de la sesión si no existe
 if 'seed' not in st.session_state:
     st.session_state['seed'] = 42
 
-# 2. SIDEBAR - PARÁMETROS [cite: 2]
+# 2. SIDEBAR - PARÁMETROS [cite: 26-27]
 with st.sidebar:
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value="Cosechador")
@@ -40,13 +39,13 @@ with st.sidebar:
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
     operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=20)
 
-# 3. CONSTANTES
+# 3. CONSTANTES [cite: 27]
 SEMANAS = 6
 DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN (MODELO 2x2 MIXTO)
+# 4. MOTOR DE PROGRAMACIÓN (LÓGICA CORRECTA Y BALANCEADA) [cite: 28-42]
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(st.session_state['seed'])
@@ -56,35 +55,37 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     for bloque_idx in [0, 21]:
         bloque = range(bloque_idx, bloque_idx + 21)
         turnos_bloque = {op: 0 for op in ops}
-        racha = {op: 0 for op in ops} # Días seguidos trabajando
+        racha = {op: 0 for op in ops}
+        # Control semanal para asegurar secuencias de máximo 4 días
+        turnos_semanales = {op: [0, 0, 0] for op in ops}
+
+        # Seguimiento de cobertura para balanceo de refuerzos
+        cob_dia = {d: 0 for d in bloque}
+        cob_noche = {d: 0 for d in bloque}
 
         for d in bloque:
             if (d % 7) >= d_semana: continue
+            sem_rel = (d - bloque_idx) // 7
             
-            # Identificar quién trabajó ayer (Racha 1) para obligar el bloque de 2 (2x2)
-            obligados_D = []
-            obligados_N = []
+            # Identificar obligados para bloque 2x2 [cite: 29-30]
+            obligados_D, obligados_N = [], []
             for op in ops:
-                if racha[op] == 1 and turnos_bloque[op] < 11:
-                    if horario[op][d-1] == TURNO_DIA: obligados_D.append(op)
+                if racha[op] == 1 and turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4:
+                    if d > 0 and horario[op][d-1] == TURNO_DIA: obligados_D.append(op)
                     else: obligados_N.append(op)
 
-            # --- ASIGNACIÓN NOCHE ---
-            cand_n = [op for op in ops if turnos_bloque[op] < 11 and racha[op] < 2]
-            random.shuffle(cand_n)
-            
+            # Candidatos aptos (Meta de 11 y tope semanal de 4)
+            aptos = [op for op in ops if turnos_bloque[op] < 11 and turnos_semanales[op][sem_rel] < 4]
+            aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO]
+            random.shuffle(aptos)
+
+            # --- ASIGNACIÓN NOCHE --- [cite: 31-34]
             asignados_n = []
-            # 1. Prioridad: Repetir Noche (Patrón NN)
-            for op in [o for o in obligados_N if o in cand_n]:
+            prioridad_n = [o for o in obligados_N if o in aptos] + [o for o in obligados_D if o in aptos and random.random() < 0.3]
+            for op in prioridad_n:
                 if len(asignados_n) < n_req: asignados_n.append(op)
             
-            # 2. Variedad: Pasar de Día a Noche (Patrón DN)
-            for op in [o for o in obligados_D if o in cand_n]:
-                if len(asignados_n) < n_req and random.random() < 0.3: # 30% prob de cambio DN
-                    asignados_n.append(op)
-            
-            # 3. Resto de cupo noche
-            resto_n = [o for o in cand_n if o not in asignados_n]
+            resto_n = [o for o in aptos if o not in asignados_n]
             resto_n.sort(key=lambda x: (turnos_bloque[x], noches_acum[x], random.random()))
             while len(asignados_n) < n_req and resto_n:
                 asignados_n.append(resto_n.pop(0))
@@ -92,22 +93,21 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             for op in asignados_n:
                 horario[op][d] = TURNO_NOCHE
                 turnos_bloque[op] += 1
+                turnos_semanales[op][sem_rel] += 1
+                cob_noche[d] += 1
                 noches_acum[op] += 1
                 racha[op] += 1
 
-            # --- ASIGNACIÓN DÍA ---
+            # --- ASIGNACIÓN DÍA --- [cite: 35-38]
             ya_n = set(asignados_n)
-            # Regla: No Noche -> Día (Descanso obligatorio post-noche)
-            cand_d = [op for op in ops if op not in ya_n and turnos_bloque[op] < 11 and racha[op] < 2]
+            cand_d = [op for op in aptos if op not in ya_n]
             if d > bloque_idx:
                 cand_d = [o for o in cand_d if horario[o][d-1] != TURNO_NOCHE]
             
             asignados_d = []
-            # 1. Prioridad: Repetir Día (Patrón DD)
             for op in [o for o in obligados_D if o in cand_d]:
                 if len(asignados_d) < d_req: asignados_d.append(op)
             
-            # 2. Resto de cupo día
             resto_d = [o for o in cand_d if o not in asignados_d]
             resto_d.sort(key=lambda x: (turnos_bloque[x], -noches_acum[x], random.random()))
             while len(asignados_d) < d_req and resto_d:
@@ -116,31 +116,43 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             for op in asignados_d:
                 horario[op][d] = TURNO_DIA
                 turnos_bloque[op] += 1
+                turnos_semanales[op][sem_rel] += 1
+                cob_dia[d] += 1
                 racha[op] += 1
 
-            # Reset de racha para quienes no trabajaron hoy
             trabajaron = set(asignados_n) | set(asignados_d)
             for op in ops:
                 if op not in trabajaron: racha[op] = 0
 
-        # Ajuste final de créditos (para asegurar las 132h/11 turnos)
+        # --- AJUSTE FINAL: BALANCEADOR DE REFUERZOS (Simétrico D/N) --- 
         for op in ops:
             intentos = 0
-            while turnos_bloque[op] < 11 and intentos < 100:
+            while turnos_bloque[op] < 11 and intentos < 500:
                 intentos += 1
                 d_rand = random.choice(list(bloque))
-                if horario[op][d_rand] != DESCANSO or (d_rand % 7) >= d_semana: continue
+                if (d_rand % 7) >= d_semana or horario[op][d_rand] != DESCANSO: continue
+                sem_rand = (d_rand - bloque_idx) // 7
                 
-                # Respetar cobertura máxima (Req + 1) y descanso post-noche
-                if sum(1 for o in ops if horario[o][d_rand] == TURNO_DIA) >= d_req + 1: continue 
+                # Regla: No 5to día semanal y no N->D
+                if turnos_semanales[op][sem_rand] >= 4: continue 
                 if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
                 
-                horario[op][d_rand] = TURNO_DIA
-                turnos_bloque[op] += 1
+                # Priorizar balance entre turnos (Máximo 1 refuerzo por turno por día)
+                # Si en el día el surplus de D es menor o igual al de N, intentar en D
+                if (cob_dia[d_rand] - d_req) <= (cob_noche[d_rand] - n_req):
+                    horario[op][d_rand] = TURNO_DIA
+                    turnos_bloque[op] += 1
+                    turnos_semanales[op][sem_rand] += 1
+                    cob_dia[d_rand] += 1
+                else:
+                    horario[op][d_rand] = TURNO_NOCHE
+                    turnos_bloque[op] += 1
+                    turnos_semanales[op][sem_rand] += 1
+                    cob_noche[d_rand] += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
-# 5. EJECUCIÓN [cite: 12]
+# 5. EJECUCIÓN [cite: 43]
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None:
         st.session_state['seed'] = semilla_manual
@@ -148,30 +160,29 @@ def procesar_generacion(semilla_manual=None):
     total_turnos_ciclo = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_base = math.ceil(total_turnos_ciclo / 11)
     op_final = math.ceil((op_base * factor_cobertura) / (1 - ausentismo))
+    # Asegurar mínimo de 2 cuadrillas completas por puesto para viabilidad del 2x2
     op_final = max(op_final, (demanda_dia + demanda_noche) * 2) 
     
     st.session_state["df"] = generar_programacion_equitativa(op_final, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_final
 
-# Botones de Acción
 col1, col2 = st.columns(2)
 with col1:
     if st.button(f"🚀 Generar Programación (Base)"):
         procesar_generacion(42)
-
 with col2:
     if st.button("🔄 Generar Otra Versión Diferente"):
         procesar_generacion(random.randint(1, 100000))
 
-# 6. RENDERIZADO [cite: 14]
+# 6. RENDERIZADO [cite: 44-48]
 if "df" in st.session_state:
     df, op_final = st.session_state["df"], st.session_state["op_final"]
     faltantes = max(0, op_final - operadores_actuales)
     
     c1, c2, c3 = st.columns(3)
-    with c1: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="metric-box-green"><div class="metric-label-dark">Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-box-green"><div>{cargo} requerido</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-box-green"><div>Contratación necesaria</div><div class="metric-value-dark">{faltantes}</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
     st.subheader("📅 Programación del Personal (Bloques 2x2)")
     style_func = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
@@ -183,34 +194,22 @@ if "df" in st.session_state:
         fila = df.loc[op]
         c1_t = sum(1 for x in fila[:21] if x != DESCANSO)
         c2_t = sum(1 for x in fila[21:] if x != DESCANSO)
-        def get_seq(data):
-            return f"{sum(1 for x in data[0:7] if x != DESCANSO)}-{sum(1 for x in data[7:14] if x != DESCANSO)}-{sum(1 for x in data[14:21] if x != DESCANSO)}"
-
         stats.append({
-            "Operador": op, "T. Día": (fila==TURNO_DIA).sum(), "T. Noche": (fila==TURNO_NOCHE).sum(),
-            "Horas S1-3": c1_t * horas_turno, "Secuencia S1-3": get_seq(fila[:21]),
-            "Horas S4-6": c2_t * horas_turno, "Secuencia S4-6": get_seq(fila[21:]),
-            "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
+            "Operador": op, "T. Día": (fila==TURNO_DIA).sum(), "T. Noche": (fila==TURNO_NCHE if 'TURNO_NCHE' in locals() else (fila==TURNO_NOCHE)).sum(),
+            "Horas S1-3": c1_t * horas_turno, "Secuencia S1-3": f"{sum(1 for x in fila[0:7] if x!=DESCANSO)}-{sum(1 for x in fila[7:14] if x!=DESCANSO)}-{sum(1 for x in fila[14:21] if x!=DESCANSO)}",
+            "Horas S4-6": c2_t * horas_turno, "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
         })
-    df_stats = pd.DataFrame(stats).set_index("Operador")
-    st.dataframe(df_stats, use_container_width=True)
+    st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
 
     st.subheader("✅ Validación de Cobertura Diaria")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df[dia] == TURNO_DIA).sum(), (df[dia] == TURNO_NOCHE).sum()
-        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": ad-demanda_dia, "Estado": "✅ OK" if ad>=demanda_dia and an>=demanda_noche else "⚠️"})
+        check.append({"Día": dia, "Día (Asig)": ad, "Noche (Asig)": an, "Refuerzos": (ad-demanda_dia)+(an-demanda_noche), "Estado": "✅ OK" if ad>=demanda_dia and an>=demanda_noche else "⚠️"})
     st.dataframe(pd.DataFrame(check).set_index("Día").T, use_container_width=True)
 
-    # --- EXPORTACIÓN ---
     output = io.BytesIO()
-    df_excel = df.copy()
-    df_excel.index.name = cargo 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_excel.style.map(style_func).to_excel(writer, sheet_name="Programación")
-        df_stats_excel = df_stats.copy()
-        df_stats_excel.insert(0, 'Cargo', cargo)
-        df_stats_excel.to_excel(writer, sheet_name="Balance")
-        pd.DataFrame(check).to_excel(writer, sheet_name="Cobertura")
-    
-    st.download_button(label=f"⬇️ Descargar Programación {cargo} (Excel)", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
+        df.to_excel(writer, sheet_name="Programación")
+        pd.DataFrame(stats).to_excel(writer, sheet_name="Balance")
+    st.download_button(label=f"⬇️ Descargar Excel {cargo}", data=output.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
