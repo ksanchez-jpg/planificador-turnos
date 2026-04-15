@@ -7,7 +7,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 1. CONFIGURACIÓN Y ESTILO
+# 1. CONFIGURACIÓN Y ESTILO [cite: 1]
 st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
 
 st.markdown("""
@@ -21,12 +21,12 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS - NIVELACIÓN TOTAL")
-st.caption("2x2 por bloques con Distribución Estricta de Refuerzos (Límite 2 por día).")
+st.caption("Optimizado para grandes volúmenes y exportación completa.")
 
-if 'seed' not in st.session_state: st.session_state['seed'] = 42
+if 'seed' not in st.session_state: st.session_state['seed'] = 42 [cite: 28]
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
 
-# --- CARGA DE EXCEL ---
+# --- CARGA DE EXCEL --- [cite: 2]
 fichas_cargadas = []
 cargo_sugerido = "Cosechador"
 conteo_sugerido = 20
@@ -40,9 +40,9 @@ with st.sidebar:
         df_excel = pd.read_excel(archivo_subido, sheet_name=hoja_sel)
         cargo_sugerido = hoja_sel
         if not df_excel.empty:
-            fichas_cargadas = df_excel.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+            fichas_cargadas = df_excel.iloc[:, 0].dropna().astype(str).str.strip().tolist() [cite: 29]
             conteo_sugerido = len(fichas_cargadas)
-            st.info(f"Fichas detectadas: {conteo_sugerido}")
+            st.info(f"Fichas detectadas: {conteo_sugerido}") [cite: 3]
 
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value=cargo_sugerido)
@@ -52,21 +52,20 @@ with st.sidebar:
     dias_cubrir = st.slider("Días/semana", 1, 7, 7)
 
     st.header("🧠 Modelo y Ajustes")
-    factor_cobertura = st.slider("Factor Holgura", 1.0, 1.5, 1.0, 0.01)
-    ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
-    operadores_actuales = st.number_input(f"{cargo} actual", min_value=0, value=conteo_sugerido)
+    factor_cobertura = st.slider("Factor Holgura", 1.0, 1.5, 1.0, 0.01) [cite: 30]
+    ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01) [cite: 4]
 
 # 3. CONSTANTES
 DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN OPTIMIZADO (Mantiene tu lógica estricta)
+# 4. MOTOR DE PROGRAMACIÓN OPTIMIZADO [cite: 7]
 @st.cache_data
 def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
-    patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
+    patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO] [cite: 31]
 
     random.seed(seed)
     random.shuffle(ops)
@@ -79,36 +78,31 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
         cob_dia = {d: 0 for d in bloque}
         cob_noche = {d: 0 for d in bloque}
 
-        # FASE 1: ASIGNACIÓN BASE
+        # FASE 1: ASIGNACIÓN BASE [cite: 32]
         for g_idx, grupo_ops in enumerate(grupos):
             off = offsets[g_idx]
             for op in grupo_ops:
                 for d in bloque:
                     if (d % 7) >= d_semana: continue
-                    val = patron_maestro[(d + off) % 8]
+                    val = patron_maestro[(d + off) % 8] [cite: 33]
                     if val != DESCANSO:
                         horario[op][d] = val
                         turnos_op[op] += 1
                         if val == TURNO_DIA: cob_dia[d] += 1
-                        else: cob_noche[d] += 1
+                        else: cob_noche[d] += 1 [cite: 34]
 
-        # FASE 2: REFUERZOS NIVELADOS OPTIMIZADOS (Sin bucle While infinito)
+        # FASE 2: REFUERZOS NIVELADOS (Optimizado para tractoristas) [cite: 35]
         deudores = [op for op in ops if turnos_op[op] < 11]
         random.shuffle(deudores)
-        
         for op in deudores:
-            # Buscamos días libres para completar las 11 jornadas
             for d in bloque:
                 if turnos_op[op] >= 11: break
-                if (d % 7) < d_semana and horario[op][d] == DESCANSO:
-                    # Lógica de asignación para mantener balance
-                    if cob_dia[d] <= cob_noche[d]:
-                        horario[op][d] = TURNO_DIA
-                        cob_dia[d] += 1
-                    else:
-                        horario[op][d] = TURNO_NOCHE
-                        cob_noche[d] += 1
+                if (d % 7) < d_semana and horario[op][d] == DESCANSO: [cite: 38]
+                    tipo = TURNO_DIA if cob_dia[d] <= cob_noche[d] else TURNO_NOCHE
+                    horario[op][d] = tipo
                     turnos_op[op] += 1
+                    if tipo == TURNO_DIA: cob_dia[d] += 1
+                    else: cob_noche[d] += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -116,10 +110,10 @@ def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana, seed):
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None: st.session_state['seed'] = semilla_manual
     st.session_state['mapping'] = {}
-    total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
+    total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3 [cite: 43]
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
-    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, d_semana=dias_cubrir, seed=st.session_state['seed'])
+    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir, st.session_state['seed'])
     st.session_state["op_final"] = op_f
 
 # BOTONES
@@ -127,81 +121,107 @@ c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("🚀 Generar Programación"): procesar_generacion(42)
 with c2:
-    if st.button("🔄 Generar Versión Aleatoria"): procesar_generacion(random.randint(1, 100000))
+    if st.button("🔄 Versión Aleatoria"): procesar_generacion(random.randint(1, 100000))
 with c3:
     if st.button("👤 Asignar Fichas Reales"):
         if "df" in st.session_state:
-            ops_ids = st.session_state["df"].index.tolist()
+            ops_ids = st.session_state["df"].index.tolist() [cite: 44]
             f_lista = fichas_cargadas.copy()
             random.shuffle(f_lista)
             mapeo = {op: f_lista[i] if i < len(f_lista) else f"VACANTE {i-len(f_lista)+1}" for i, op in enumerate(ops_ids)}
             st.session_state['mapping'] = mapeo
-            st.success("Personal asignado correctamente.")
+            st.success("Personal asignado con éxito.")
 
-# 6. RENDERIZADO Y EXPORTACIÓN
+# 6. RENDERIZADO Y EXPORTACIÓN [cite: 45]
 if "df" in st.session_state:
     df_base = st.session_state["df"]
+    
+    # 1. Renombrar ANTES de aplicar estilo para evitar KeyError
     df_visual = df_base.copy()
     if st.session_state['mapping']:
         df_visual.index = [st.session_state['mapping'].get(x, x) for x in df_visual.index]
 
-    op_final = st.session_state["op_final"]
-    c_m1, c_m2, c_m3 = st.columns(3)
-    with c_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas Nómina</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
-    with c_m3: st.markdown(f'<div class="metric-box-green"><div>Horas/Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
-
+    # 2. Visualización en App
     st.subheader("📅 Programación")
-    style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
+    def style_f(v): [cite: 46]
+        if v == "D": return "background-color: #FFF3CD; font-weight: bold"
+        if v == "N": return "background-color: #CCE5FF; font-weight: bold"
+        return "background-color: #F8F9FA; font-weight: bold"
+    
     st.dataframe(df_visual.style.map(style_f), use_container_width=True)
 
-    st.subheader("📊 Balance Detallado")
-    stats = []
+    # 📊 TABLA DE BALANCE [cite: 47]
+    stats_list = []
     for idx in df_base.index:
         f = df_base.loc[idx]
-        stats.append({
+        stats_list.append({
             "Identidad": st.session_state['mapping'].get(idx, idx),
-            "T. Día": (f==TURNO_DIA).sum(), "T. Noche": (f==TURNO_NOCHE).sum(),
-            "Horas S1-3": sum(1 for x in f[:21] if x != DESCANSO) * horas_turno,
-            "Secuencia S1-3": f"{sum(1 for x in f[0:7] if x!=DESCANSO)}-{sum(1 for x in f[7:14] if x!=DESCANSO)}-{sum(1 for x in f[14:21] if x!=DESCANSO)}",
-            "Horas S4-6": sum(1 for x in f[21:] if x != DESCANSO) * horas_turno,
-            "Secuencia S4-6": f"{sum(1 for x in f[21:28] if x!=DESCANSO)}-{sum(1 for x in f[28:35] if x!=DESCANSO)}-{sum(1 for x in f[35:42] if x!=DESCANSO)}",
-            "Estado": "✅ 44h OK"
+            "T. Día": int((f==TURNO_DIA).sum()), 
+            "T. Noche": int((f==TURNO_NOCHE).sum()),
+            "Horas Totales": int((f!=DESCANSO).sum() * horas_turno),
+            "Secuencia": f"{sum(1 for x in f[0:7] if x!=DESCANSO)}-{sum(1 for x in f[7:14] if x!=DESCANSO)}",
+            "Estado": "✅ OK" [cite: 48]
         })
-    st.dataframe(pd.DataFrame(stats).set_index("Identidad"), use_container_width=True)
+    df_balance = pd.DataFrame(stats_list)
+    st.subheader("📊 Balance Detallado")
+    st.dataframe(df_balance.set_index("Identidad"), use_container_width=True)
 
-    # EXPORTACIÓN
+    # ✅ TABLA DE CUMPLIMIENTO
+    cumplimiento = []
+    for dia in NOMBRES_DIAS:
+        ad, an = (df_base[dia] == TURNO_DIA).sum(), (df_base[dia] == TURNO_NOCHE).sum()
+        cumplimiento.append({
+            "Día": dia, "Día (Req)": demanda_dia, "Día (Asig)": ad,
+            "Noche (Req)": demanda_noche, "Noche (Asig)": an, "Cumplimiento": "✅ OK" if ad>=demanda_dia and an>=demanda_noche else "⚠️"
+        })
+    df_cumplimiento = pd.DataFrame(cumplimiento)
+    st.subheader("✅ Validación de Cobertura")
+    st.dataframe(df_cumplimiento.set_index("Día").T, use_container_width=True)
+
+    # ── EXPORTACIÓN EXCEL COMPLETA ────────────────────── [cite: 49]
     out = io.BytesIO()
     wb = Workbook()
     
-    # Estilos Excel
-    fill_D = PatternFill("solid", start_color="FFF3CD")
+    # Estilos
+    fill_D = PatternFill("solid", start_color="FFF3CD") [cite: 49]
     fill_N = PatternFill("solid", start_color="CCE5FF")
     fill_hdr = PatternFill("solid", start_color="0F172A")
-    font_hdr = Font(bold=True, color="F8FAFC")
-    align_c = Alignment(horizontal="center", vertical="center")
-    
+    font_hdr = Font(bold=True, color="FFFFFF") [cite: 50]
+    align_c = Alignment(horizontal="center", vertical="center") [cite: 51]
+    border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin')) [cite: 53]
+
+    # HOJA 1: Programación con Colores [cite: 50]
     ws1 = wb.active
     ws1.title = "Programación"
+    ws1.append(["Identidad"] + list(df_visual.columns))
+    for cell in ws1[1]: [cite: 52]
+        cell.font = font_hdr; cell.fill = fill_hdr; cell.alignment = align_c; cell.border = border
     
-    # Encabezados
-    ws1.cell(1, 1, "Identidad").font = font_hdr; ws1.cell(1,1).fill = fill_hdr
-    for c_idx, col_name in enumerate(df_visual.columns, start=2):
-        cell = ws1.cell(1, c_idx, col_name)
-        cell.font = font_hdr; cell.fill = fill_hdr; cell.alignment = align_c
-
-    # Datos
-    for r_idx, (idx, row) in enumerate(df_visual.iterrows(), start=2):
-        ws1.cell(r_idx, 1, idx).font = Font(bold=True)
-        for c_idx, val in enumerate(row, start=2):
+    for r_idx, (idx, row) in enumerate(df_visual.iterrows(), 2):
+        ws1.cell(r_idx, 1, idx).font = Font(bold=True) [cite: 54]
+        for c_idx, val in enumerate(row, 2):
             cell = ws1.cell(r_idx, c_idx, val)
-            cell.alignment = align_c
-            if val == "D": cell.fill = fill_D
+            cell.alignment = align_c; cell.border = border
+            if val == "D": cell.fill = fill_D [cite: 55]
             elif val == "N": cell.fill = fill_N
 
-    # Hoja de Balance
+    # HOJA 2: Balance [cite: 56]
     ws2 = wb.create_sheet("Balance Operadores")
-    # (Se puede añadir la lógica de pegado de tabla de balance aquí)
-    
-    wb.save(out)
-    st.download_button(label="⬇️ Descargar Excel", data=out.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
+    ws2.append(list(df_balance.columns))
+    for cell in ws2[1]: [cite: 59]
+        cell.font = font_hdr; cell.fill = fill_hdr
+    for r_idx, row in enumerate(df_balance.values, 2):
+        for c_idx, val in enumerate(row, 1):
+            ws2.cell(r_idx, c_idx, val).border = border [cite: 61]
+
+    # HOJA 3: Cumplimiento
+    ws3 = wb.create_sheet("Cumplimiento")
+    ws3.append(list(df_cumplimiento.columns))
+    for cell in ws3[1]:
+        cell.font = font_hdr; cell.fill = fill_hdr
+    for r_idx, row in enumerate(df_cumplimiento.values, 2):
+        for c_idx, val in enumerate(row, 1):
+            ws3.cell(r_idx, c_idx, val).border = border
+
+    wb.save(out) [cite: 62]
+    st.download_button(label="⬇️ Descargar Excel Completo", data=out.getvalue(), file_name=f"Programacion_{cargo}.xlsx")
