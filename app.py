@@ -4,7 +4,7 @@ import pandas as pd
 import io
 import random
 
-# 1. CONFIGURACIÓN Y ESTILO [cite: 25]
+# 1. CONFIGURACIÓN Y ESTILO
 st.set_page_config(page_title="Programación de Turnos 44H", layout="wide")
 
 st.markdown("""
@@ -23,7 +23,7 @@ st.caption("Objetivo: 132h por ciclo, modelo 2x2 mixto, máximo 4 días/semana y
 if 'seed' not in st.session_state:
     st.session_state['seed'] = 42
 
-# 2. SIDEBAR - PARÁMETROS [cite: 26-27]
+# 2. SIDEBAR - PARÁMETROS
 with st.sidebar:
     st.header("👤 Parámetros")
     cargo = st.text_input("Nombre del Cargo", value="Cosechador")
@@ -39,13 +39,13 @@ with st.sidebar:
     ausentismo = st.slider("Ausentismo (%)", 0.0, 0.3, 0.0, 0.01)
     operadores_actuales = st.number_input(f"{cargo} actual (Nómina)", min_value=0, value=20)
 
-# 3. CONSTANTES [cite: 27]
+# 3. CONSTANTES
 SEMANAS = 6
 DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN (LÓGICA CORRECTA Y BALANCEADA) [cite: 28-42]
+# 4. MOTOR DE PROGRAMACIÓN (LÓGICA CORRECTA Y BALANCEADA)
 def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     random.seed(st.session_state['seed'])
@@ -75,7 +75,7 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             aptos = [op for op in aptos if d < 1 or horario[op][d-1] == DESCANSO]
             random.shuffle(aptos)
 
-            # --- ASIGNACIÓN NOCHE --- [cite: 31-34]
+            # --- ASIGNACIÓN NOCHE ---
             asignados_n = []
             prioridad_n = [o for o in obligados_N if o in aptos] + [o for o in obligados_D if o in aptos and random.random() < 0.3]
             for op in prioridad_n:
@@ -94,7 +94,7 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 noches_acum[op] += 1
                 racha[op] += 1
 
-            # --- ASIGNACIÓN DÍA --- [cite: 35-38]
+            # --- ASIGNACIÓN DÍA ---
             ya_n = set(asignados_n)
             cand_d = [op for op in aptos if op not in ya_n]
             if d > bloque_idx:
@@ -120,32 +120,52 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
             for op in ops:
                 if op not in trabajaron: racha[op] = 0
 
-        # --- AJUSTE FINAL: BALANCEADOR DE REFUERZOS (Simétrico D/N) --- 
+        # --- AJUSTE FINAL: BALANCEADOR DE REFUERZOS Y EQUIDAD INDIVIDUAL --- 
         for op in ops:
-            intentos = 0
-            while turnos_bloque[op] < 11 and intentos < 500:
-                intentos += 1
-                d_rand = random.choice(list(bloque))
-                if (d_rand % 7) >= d_semana or horario[op][d_rand] != DESCANSO: continue
-                sem_rand = (d_rand - bloque_idx) // 7
+            while turnos_bloque[op] < 11:
+                # Buscar días de descanso válidos en el bloque actual
+                dias_validos = []
+                for d in bloque:
+                    sem_rel = (d - bloque_idx) // 7
+                    if (d % 7) < d_semana and horario[op][d] == DESCANSO and turnos_semanales[op][sem_rel] < 4:
+                        if not (d > bloque_idx and horario[op][d-1] == TURNO_NOCHE):
+                            dias_validos.append(d)
                 
-                if turnos_semanales[op][sem_rand] >= 4: continue 
-                if d_rand > bloque_idx and horario[op][d_rand-1] == TURNO_NOCHE: continue
+                if not dias_validos: break # No hay más huecos legales para este operador
                 
-                if (cob_dia[d_rand] - d_req) <= (cob_noche[d_rand] - n_req):
-                    horario[op][d_rand] = TURNO_DIA
-                    turnos_bloque[op] += 1
-                    turnos_semanales[op][sem_rand] += 1
-                    cob_dia[d_rand] += 1
+                # Priorizar días con menor personal total asignado para distribuir refuerzos equitativamente
+                dias_validos.sort(key=lambda x: (cob_dia[x] + cob_noche[x]))
+                d_optimo = dias_validos[0]
+                sem_optimo = (d_optimo - bloque_idx) // 7
+                
+                # Calcular balance personal actual (Día vs Noche) para este operador
+                total_d = sum(1 for dia_idx in range(DIAS_TOTALES) if horario[op][dia_idx] == TURNO_DIA)
+                total_n = sum(1 for dia_idx in range(DIAS_TOTALES) if horario[op][dia_idx] == TURNO_NOCHE)
+                
+                # Decidir el turno basándose en el balance personal y la carga actual del día
+                if total_d <= total_n:
+                    # El operador necesita más turnos de día para equilibrarse
+                    if (cob_dia[d_optimo] - d_req) <= (cob_noche[d_optimo] - n_req):
+                        horario[op][d_optimo] = TURNO_DIA
+                        cob_dia[d_optimo] += 1
+                    else:
+                        horario[op][d_optimo] = TURNO_NOCHE
+                        cob_noche[d_optimo] += 1
                 else:
-                    horario[op][d_rand] = TURNO_NOCHE
-                    turnos_bloque[op] += 1
-                    turnos_semanales[op][sem_rand] += 1
-                    cob_noche[d_rand] += 1
+                    # El operador necesita más turnos de noche
+                    if (cob_noche[d_optimo] - n_req) <= (cob_dia[d_optimo] - d_req):
+                        horario[op][d_optimo] = TURNO_NOCHE
+                        cob_noche[d_optimo] += 1
+                    else:
+                        horario[op][d_optimo] = TURNO_DIA
+                        cob_dia[d_optimo] += 1
+                
+                turnos_bloque[op] += 1
+                turnos_semanales[op][sem_optimo] += 1
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
-# 5. EJECUCIÓN [cite: 43]
+# 5. EJECUCIÓN
 def procesar_generacion(semilla_manual=None):
     if semilla_manual is not None:
         st.session_state['seed'] = semilla_manual
@@ -166,7 +186,7 @@ with col2:
     if st.button("🔄 Generar Otra Versión Diferente"):
         procesar_generacion(random.randint(1, 100000))
 
-# 6. RENDERIZADO [cite: 44-48]
+# 6. RENDERIZADO
 if "df" in st.session_state:
     df, op_final = st.session_state["df"], st.session_state["op_final"]
     faltantes = max(0, op_final - operadores_actuales)
@@ -189,11 +209,11 @@ if "df" in st.session_state:
         stats.append({
             "Operador": op, 
             "T. Día": (fila==TURNO_DIA).sum(), 
-            "T. Noche": (fila==TURNO_NOCHE).sum(),
+            "T. Noche": (fila==TURNO_NCHE if 'TURNO_NCHE' in locals() else (fila==TURNO_NOCHE)).sum(),
             "Horas S1-3": c1_t * horas_turno, 
             "Secuencia S1-3": f"{sum(1 for x in fila[0:7] if x!=DESCANSO)}-{sum(1 for x in fila[7:14] if x!=DESCANSO)}-{sum(1 for x in fila[14:21] if x!=DESCANSO)}",
             "Horas S4-6": c2_t * horas_turno, 
-            "Secuencia S4-6": f"{sum(1 for x in fila[21:28] if x!=DESCANSO)}-{sum(1 for x in fila[28:35] if x!=DESCANSO)}-{sum(1 for x in fila[35:42] if x!=DESCANSO)}", # NUEVA COLUMNA
+            "Secuencia S4-6": f"{sum(1 for x in fila[21:28] if x!=DESCANSO)}-{sum(1 for x in fila[28:35] if x!=DESCANSO)}-{sum(1 for x in fila[35:42] if x!=DESCANSO)}",
             "Estado": "✅ 44h OK" if c1_t == 11 and c2_t == 11 else "❌ Revisar"
         })
     st.dataframe(pd.DataFrame(stats).set_index("Operador"), use_container_width=True)
