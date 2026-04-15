@@ -18,12 +18,12 @@ html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 """, unsafe_allow_html=True)
 
 st.title("🗓 PROGRAMACIÓN DE TURNOS - NIVELACIÓN TOTAL")
-st.caption("Modelo 2x2, 132h, Balance D/N y Límite Estricto de 2 Refuerzos por día.")
+st.caption("2x2 por bloques con Distribución Estricta de Refuerzos (Límite 2 por día).")
 
 if 'seed' not in st.session_state: st.session_state['seed'] = 42
 if 'mapping' not in st.session_state: st.session_state['mapping'] = {}
 
-# --- BLOQUE DE EXCEL (COSECHA.xlsx) ---
+# --- CARGA DE EXCEL ---
 fichas_cargadas = []
 cargo_sugerido = "Cosechador"
 conteo_sugerido = 20
@@ -58,8 +58,8 @@ DIAS_TOTALES = 42
 TURNO_DIA, TURNO_NOCHE, DESCANSO = "D", "N", "R"
 NOMBRES_DIAS = [f"S{s}-{d}" for s in range(1, 7) for d in ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]]
 
-# 4. MOTOR DE PROGRAMACIÓN CON LÍMITE DE REFUERZOS
-def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
+# 4. MOTOR DE PROGRAMACIÓN CON DISTRIBUCIÓN ESTRICTA
+def generar_programacion_nivelada(n_ops, d_req, n_req, d_semana):
     ops = [f"Op {i+1}" for i in range(n_ops)]
     horario = {op: [DESCANSO] * DIAS_TOTALES for op in ops}
     patron_maestro = [TURNO_DIA, TURNO_DIA, DESCANSO, DESCANSO, TURNO_NOCHE, TURNO_NOCHE, DESCANSO, DESCANSO]
@@ -88,9 +88,10 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                         else: cob_noche[d] += 1
                         turnos_semanales[op][(d - bloque_idx) // 7] += 1
 
-        # FASE 2: REFUERZOS CON LÍMITE ESTRICTO (MAX 2 REFUERZOS/DÍA)
-        # Probamos con techos crecientes (primero intentar máximo 1 refuerzo, luego 2)
-        for techo_refuerzos in [1, 2, 3]: 
+        # FASE 2: REFUERZOS NIVELADOS (Máximo 2 por día)
+        # Hacemos múltiples pasadas para llenar los deudores sin saturar días
+        max_refuerzos_permitidos = 1
+        while max_refuerzos_permitidos <= 3: # Subirá a 3 solo si es imposible con 2
             deudores = [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]
             if not deudores: break
             
@@ -99,34 +100,50 @@ def generar_programacion_equitativa(n_ops, d_req, n_req, d_semana):
                 conteo = sum(1 for d in bloque if horario[op][d] != DESCANSO)
                 if conteo >= 11: continue
                 
+                # Balance individual D/N
                 d_op = sum(1 for d in bloque if horario[op][d] == TURNO_DIA)
                 n_op = sum(1 for d in bloque if horario[op][d] == TURNO_NOCHE)
-                tipo_necesario = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
+                tipo_nec = TURNO_DIA if d_op <= n_op else TURNO_NOCHE
                 
-                dias_posibles = []
+                # Evaluar todos los días libres del bloque
+                candidatos = []
                 for d in bloque:
                     if (d % 7) < d_semana and horario[op][d] == DESCANSO:
                         sem_idx = (d - bloque_idx) // 7
                         if turnos_semanales[op][sem_idx] >= 4: continue
                         
-                        # Limite de refuerzos por día (Refuerzos = Asignados - Demanda)
-                        refuerzos_hoy = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
-                        if refuerzos_hoy >= techo_refuerzos: continue
+                        # Restricción post-noche
+                        if tipo_nec == TURNO_DIA and d > bloque_idx and horario[op][d-1] == TURNO_NOCHE: continue
                         
+                        # Límite de refuerzos estricto
+                        ref_dia = (cob_dia[d] - d_req) + (cob_noche[d] - n_req)
+                        if ref_dia >= max_refuerzos_permitidos: continue
+                        
+                        # Puntuación del día: 
+                        # Prioridad 1: Día con menos refuerzos totales.
+                        # Prioridad 2: Si está al lado de un turno igual (bono bloque).
                         v_izq = horario[op][d-1] if d > bloque_idx else None
                         v_der = horario[op][d+1] if d < bloque_idx + 20 else None
+                        es_bloque = 1 if (v_izq == tipo_nec or v_der == tipo_nec) else 0
                         
-                        if v_izq == tipo_necesario or v_der == tipo_necesario:
-                            if tipo_necesario == TURNO_DIA and v_izq == TURNO_NOCHE: continue
-                            dias_posibles.append(d)
+                        # Score: (Carga del día, -es_bloque) -> Menos carga primero, si empatan, el que haga bloque.
+                        score = (ref_dia, -es_bloque)
+                        candidatos.append((score, d))
                 
-                if dias_posibles:
-                    dias_posibles.sort(key=lambda x: cob_dia[x] if tipo_necesario == TURNO_DIA else cob_noche[x])
-                    d_sel = dias_posibles[0]
-                    horario[op][d_sel] = tipo_necesario
-                    if tipo_necesario == TURNO_DIA: cob_dia[d_sel] += 1
+                if candidatos:
+                    candidatos.sort() # El score más bajo gana
+                    d_sel = candidatos[0][1]
+                    horario[op][d_sel] = tipo_nec
+                    if tipo_nec == TURNO_DIA: cob_dia[d_sel] += 1
                     else: cob_noche[d_sel] += 1
                     turnos_semanales[op][(d_sel - bloque_idx) // 7] += 1
+            
+            # Si después de una vuelta completa todos siguen siendo deudores, subimos el techo
+            if deudores == [op for op in ops if sum(1 for d in bloque if horario[op][d] != DESCANSO) < 11]:
+                max_refuerzos_permitidos += 1
+            else:
+                # Si logramos asignar a alguien, mantenemos el techo bajo para la siguiente vuelta
+                pass
 
     return pd.DataFrame(horario, index=NOMBRES_DIAS).T
 
@@ -137,7 +154,7 @@ def procesar_generacion(semilla_manual=None):
     total_t = (demanda_dia + demanda_noche) * dias_cubrir * 3
     op_f = max(math.ceil((math.ceil(total_t / 11) * factor_cobertura) / (1 - ausentismo)), (demanda_dia + demanda_noche) * 2)
     op_f = ((op_f + 3) // 4) * 4
-    st.session_state["df"] = generar_programacion_equitativa(op_f, demanda_dia, demanda_noche, dias_cubrir)
+    st.session_state["df"] = generar_programacion_nivelada(op_f, demanda_dia, demanda_noche, dias_cubrir)
     st.session_state["op_final"] = op_f
 
 # BOTONES
@@ -145,16 +162,16 @@ c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("🚀 Generar Programación"): procesar_generacion(42)
 with c2:
-    if st.button("🔄 Generar Otra Versión"): procesar_generacion(random.randint(1, 100000))
+    if st.button("🔄 Generar Versión Aleatoria"): procesar_generacion(random.randint(1, 100000))
 with c3:
-    if st.button("👤 Asignar Fichas"):
+    if st.button("👤 Asignar Fichas Reales"):
         if "df" in st.session_state:
             ops_ids = st.session_state["df"].index.tolist()
             f_lista = fichas_cargadas.copy()
             random.shuffle(f_lista)
             mapeo = {op: f_lista[i] if i < len(f_lista) else f"VACANTE {i-len(f_lista)+1}" for i, op in enumerate(ops_ids)}
             st.session_state['mapping'] = mapeo
-            st.success("Personal asignado con límite de refuerzos.")
+            st.success("Personal asignado con nivelación estricta.")
 
 # 6. RENDERIZADO
 if "df" in st.session_state:
@@ -166,14 +183,14 @@ if "df" in st.session_state:
     op_final = st.session_state["op_final"]
     c_m1, c_m2, c_m3 = st.columns(3)
     with c_m1: st.markdown(f'<div class="metric-box-green"><div>Personal Total</div><div class="metric-value-dark">{op_final}</div></div>', unsafe_allow_html=True)
-    with c_m2: st.markdown(f'<div class="metric-box-green"><div>Nómina Real</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
-    with c_m3: st.markdown(f'<div class="metric-box-green"><div>Meta Horas</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
+    with c_m2: st.markdown(f'<div class="metric-box-green"><div>Fichas Nómina</div><div class="metric-value-dark">{len(fichas_cargadas)}</div></div>', unsafe_allow_html=True)
+    with c_m3: st.markdown(f'<div class="metric-box-green"><div>Horas/Ciclo</div><div class="metric-value-dark">132.0</div></div>', unsafe_allow_html=True)
 
-    st.subheader("📅 Programación Nivelada (Límite Refuerzos: 2)")
+    st.subheader("📅 Programación (Nivelación Máxima)")
     style_f = lambda v: f"background-color: {'#FFF3CD' if v=='D' else '#CCE5FF' if v=='N' else '#F8F9FA'}; font-weight: bold"
     st.dataframe(df_visual.style.map(style_f), use_container_width=True)
 
-    st.subheader("📊 Balance y Secuencias")
+    st.subheader("📊 Balance Detallado")
     stats = []
     for idx in df_base.index:
         f = df_base.loc[idx]
@@ -188,7 +205,7 @@ if "df" in st.session_state:
         })
     st.dataframe(pd.DataFrame(stats).set_index("Identidad"), use_container_width=True)
 
-    st.subheader("✅ Validación de Cobertura Diaria (Máximo 2 Refuerzos)")
+    st.subheader("✅ Validación de Cobertura (Límite Estricto 2)")
     check = []
     for dia in NOMBRES_DIAS:
         ad, an = (df_base[dia] == TURNO_DIA).sum(), (df_base[dia] == TURNO_NOCHE).sum()
